@@ -1,0 +1,12 @@
+[package]
+name = "Explorer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.33.3"
+hf = "0.6.0"
+opener = "0.7"
+walkdir = "2.5"
+whoami = "2.1.0"
+dirs = "5.0"
