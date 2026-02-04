@@ -10,6 +10,7 @@ struct FileExplorer {
     search_query: String,
     search_result: Vec<PathBuf>,
     search_rx: Option<Receiver<PathBuf>>,
+    zoom_factor: f32,
 }
 
 impl FileExplorer{
@@ -20,6 +21,7 @@ impl FileExplorer{
             search_query: String::new(),
             search_result: Vec::new(),
             search_rx: None,
+            zoom_factor: 1.5,
         }
     }
 
@@ -49,9 +51,6 @@ impl FileExplorer{
                         }
                     }
                 }
-                // if let Some(parent) = file.path().parent(){
-                //     println!("Идёт поиск....{}", parent.to_string_lossy());
-                // }
             }
         });
     }
@@ -77,23 +76,27 @@ fn draw_item(ui: &mut egui::Ui, path: &PathBuf, app: &mut FileExplorer, _ctx: &e
     let filename = path.file_name().unwrap_or_default().to_string_lossy();
     let is_dir = path.is_dir();
     let icon = if is_dir { "📁" } else { "📄" };
-    if ui.selectable_label(false, format!("{} {}", icon, filename)).clicked() {
-        let cur_path = app.current_path.clone();
-        if is_dir {
-            app.path_history.push(cur_path);
-            app.current_path = path.clone();
-            app.search_query.clear();
-            app.search_rx = None
-        } else {
-            let _ = opener::open(path);
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+    ui.scope(|ui|{
+        ui.style_mut().spacing.button_padding *= app.zoom_factor;
+        if ui.selectable_label(false, format!("{} {}", icon, filename)).clicked() {
+            let cur_path = app.current_path.clone();
+            if is_dir {
+                app.path_history.push(cur_path);
+                app.current_path = path.clone();
+                app.search_query.clear();
+                app.search_rx = None
+            } else {
+                let _ = opener::open(path);
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+            }
         }
-    }
+    });
 }
 
 
 impl eframe::App for FileExplorer {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.set_pixels_per_point(self.zoom_factor);
         if let Some(ref rx) = self.search_rx{
             while let Ok(path) = rx.try_recv() {
                 self.search_result.push(path);
@@ -103,20 +106,29 @@ impl eframe::App for FileExplorer {
         egui::TopBottomPanel::top("main_top_bar").show(ctx, |ui| {
             ui.add_space(10.0);
             ui.horizontal(|ui|{
-                ui.group(|ui|{ //группа управления путём
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::default()), |ui|{
+                    ui.group(|ui|{ //группа управления путём
+                        if ui.button("🏠").clicked(){
+                            if let Some(home_dir) = dirs::home_dir(){
+                                self.path_history.push(self.current_path.clone());
+                                self.current_path = home_dir;
+                            }
+                        }
                         if ui.button("^").clicked() {  //изменить ширину
                             if let Some(parent) = self.current_path.parent() {
                                 self.path_history.push(self.current_path.clone());
                                 self.current_path = parent.to_path_buf();
                             }
                         }
-                    if ui.button("<--").clicked(){
-                        println!("{:?}", self.path_history);
-                        if let Some(future_path) = self.path_history.pop(){
-                            self.current_path = future_path
+                        if ui.button("<--").clicked(){
+                            // println!("{:?}", self.path_history);
+                            if let Some(future_path) = self.path_history.pop(){
+                                self.current_path = future_path
+                            }
                         }
-                    }
-                    ui.label(format!("Текущий путь: {}", self.current_path.to_string_lossy())); //можно поменять to_string_lossy на display??
+                        ui.label(format!("Текущий путь: {}", self.current_path.to_string_lossy())); //можно поменять to_string_lossy на display??
+                });
+                ui.add_space(50.0);
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::default()), |ui|{
                     ui.group(|ui|{
@@ -134,9 +146,7 @@ impl eframe::App for FileExplorer {
                             }
                         }
                         if self.search_query.is_empty(){
-                            if ui.button("🔎").clicked(){
-                                self.search_query.clear();
-                            }
+                            ui.add_enabled(false, egui::Button::new("🔎"));
                         }
                     });
                 });
@@ -164,18 +174,18 @@ impl eframe::App for FileExplorer {
                             draw_item(ui, &path, self, ctx);
                         }
                     } else {
-                    if let Ok(files) = std::fs::read_dir(&self.current_path){
-                        for file in files.flatten(){ //flatten - убирает лишние циклы, выводы с Result
-                            let path = file.path();
-                            let filename = path.file_name().unwrap_or_default().to_string_lossy();
-                            if !self.search_query.is_empty() && !filename.to_lowercase().contains(&self.search_query.to_lowercase()){ //contains - поиск подстроки
-                                continue;
+                        if let Ok(files) = std::fs::read_dir(&self.current_path){
+                            for file in files.flatten(){ //flatten - убирает лишние циклы, выводы с Result
+                                let path = file.path();
+                                let filename = path.file_name().unwrap_or_default().to_string_lossy();
+                                if !self.search_query.is_empty() && !filename.to_lowercase().contains(&self.search_query.to_lowercase()){ //contains - поиск подстроки
+                                    continue;
+                                }
+                                draw_item(ui, &path, self, ctx);
                             }
-                            draw_item(ui, &path, self, ctx);
                         }
                     }
-                }
-            });
+                });
         });
     }
 }
