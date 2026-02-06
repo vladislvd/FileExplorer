@@ -12,6 +12,7 @@ dependencies = [
  "ignore",
  "num_cpus",
  "opener",
+ "parking_lot",
  "rayon",
  "regex",
  "whoami",

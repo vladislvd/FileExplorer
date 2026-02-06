@@ -1,9 +1,8 @@
 use eframe::egui;
-use core::f32;
-use std::{path::PathBuf, sync::{atomic, mpsc::channel}, thread, time::SystemTime};
+use core::{f32, time};
+use std::{path::PathBuf, sync::atomic, thread, time::SystemTime, os::windows::fs::MetadataExt};
 use std::sync::{Arc, RwLock, atomic::AtomicBool};
 use rayon::prelude::*;
-
 
 #[derive(Default, PartialEq, Clone)]
 pub enum SortBy {
@@ -31,12 +30,13 @@ struct FileExplorer {
     search_whole_word: bool,
     match_case: bool,
     search_everywhere: bool,
+    index_time: Arc<RwLock<std::time::Duration>>,
+    index_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 struct FileInfo {
     path: PathBuf,
     name: String,
-    name_lower: String,
     is_dir: bool,
     created_at: SystemTime,
     is_hidden: bool,
@@ -62,6 +62,8 @@ impl FileExplorer{
             search_whole_word: true,
             match_case: true, //=учитывать регистр
             search_everywhere: true,
+            index_time: Arc::new(RwLock::new(time::Duration::new(0, 0))),
+            index_count: Arc::new(atomic::AtomicUsize::new(0)),
         };
 
         app.update_index();
@@ -71,37 +73,74 @@ impl FileExplorer{
     fn update_index(&self){
         let index_prt = Arc::clone(&self.static_index);
         let is_indexing = Arc::clone(&self.is_indexing);
-        let root = self.current_path.clone();
+        let index_time = Arc::clone(&self.index_time);
+        let index_count = Arc::clone(&self.index_count);
+        let root = PathBuf::from("C://");
 
         thread::spawn(move || {
+            let start_time = std::time::Instant::now();
             is_indexing.store(true, atomic::Ordering::SeqCst);
-            let (tx, rx) = channel();
-            let walker = ignore::WalkBuilder::new(root).threads(num_cpus::get()).build_parallel();
+            let walker = ignore::WalkBuilder::new(root)
+                .filter_entry(|e|{
+                    let path = e.path();
+                    if let Some(ext) = path.extension() {
+                        if ext == "log" {
+                            return false;
+                        }
+                    }
+                    let name = e.file_name();
+                    name != "Windows" && 
+                    name != "$Recycle.Bin" && 
+                    name != "$SysReset" && 
+                    name != "hp" &&
+                    name != "System.sav" &&
+                    name != "AppData" &&
+                    name != "Default" && 
+                    name != "Recovery"
+                })
+                .hidden(false)
+                .follow_links(false)
+                .threads(num_cpus::get()).build_parallel();
+            let all_files = Arc::new(parking_lot::Mutex::new(Vec::with_capacity(800000)));
+
             walker.run(|| {
-                let tx = tx.clone();
+                let shared_ptr = Arc::clone(&all_files);
+                let mut buffer = Vec::with_capacity(2048);
                 Box::new(move |result| {
+                    let buffer = &mut buffer;
                     if let Ok(entry) = result{
-                        let path = entry.path().to_path_buf();
-                        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                        let meta = path.metadata().ok();
-                        let info = FileInfo{
-                            is_hidden: name.starts_with(".") || hf::is_hidden(&path).unwrap_or(false),
-                            name_lower: name.to_lowercase(),
-                            name: name,
-                            is_dir: path.is_dir(),
-                            created_at: meta.and_then(|m| m.created().ok()).unwrap_or(std::time::SystemTime::now()),
-                            is_venv: path.components().any(|c| c.as_os_str() == "venv"),
-                            path: path
-                        };
-                        let _ = tx.send(info);
+                        let file_name_os = entry.file_name();
+                        let name = file_name_os.to_string_lossy();
+                        let meta = entry.metadata().ok();
+                        let mut is_hidden = name.starts_with(".");
+                        #[cfg(windows)]
+                        if !is_hidden {
+                            is_hidden = meta.map(|m| m.file_attributes() & 0x2 != 0).unwrap_or(false);
+                        }
+
+                        buffer.push(FileInfo{
+                            is_hidden: is_hidden,
+                            is_venv: name == "venv",
+                            name: name.into_owned(),
+                            is_dir: entry.file_type().map(|t| t.is_dir()).unwrap_or(false),
+                            created_at: entry.metadata().ok().and_then(|m| m.created().ok()).unwrap_or(std::time::SystemTime::now()),
+                            path: entry.into_path(),
+                        });
+                        if buffer.len() >= 2048 {
+                            let mut global_vec = shared_ptr.lock();
+                            global_vec.append(buffer);
+                        }
                     }
                     ignore::WalkState::Continue
                 })
             });
-            drop(tx);
-            let data: Vec<_> = rx.into_iter().collect();
+            let data = std::mem::take(&mut *all_files.lock());
+            index_count.store(data.len(), atomic::Ordering::SeqCst);
             if let Ok(mut lock) = index_prt.write() {
                 *lock = data;
+            }
+            if let Ok(mut t_lock) = index_time.write() {
+                *t_lock = start_time.elapsed();
             }
             is_indexing.store(false, atomic::Ordering::SeqCst);
         });
@@ -127,7 +166,7 @@ impl FileExplorer{
             }).collect()
         } else {
             index.par_iter().filter(|file|{
-                let target = if match_case { &file.name } else { &file.name_lower };
+                let target = if match_case { &file.name } else { &file.name.to_lowercase() };
                 if !search_hidden && file.is_hidden { return false; }
                 if !search_venv && file.is_venv { return false; }
                 if !search_everywhere && !file.path.starts_with(&current_path) { return false; }
@@ -141,14 +180,16 @@ impl FileExplorer{
         };
 
         filtred_files.par_sort_by(|a, b|{
+            let a_low_name = a.name.to_lowercase();
+            let b_low_name = b.name.to_lowercase();
             let result =match sort_by {
                 SortBy::Date => a.created_at.cmp(&b.created_at),
-                SortBy::Name => a.name_lower.cmp(&b.name_lower),
+                SortBy::Name => a_low_name.cmp(&b_low_name),
                 SortBy::Type => {
                     if a.is_dir != b.is_dir {
                         b.is_dir.cmp(&a.is_dir)
                     } else {
-                        a.name_lower.cmp(&b.name_lower)
+                        a_low_name.cmp(&b_low_name)
                     }
                 }
             };
@@ -217,20 +258,20 @@ impl eframe::App for FileExplorer {
                             if let Some(home_dir) = dirs::home_dir(){
                                 self.path_history.push(self.current_path.clone());
                                 self.current_path = home_dir;
-                                self.update_index();
+                                // self.update_index();
                             }
                         }
                         if ui.button("^").on_hover_text("To the parent directory").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {  //изменить ширину
                             if let Some(parent) = self.current_path.parent() {
                                 self.path_history.push(self.current_path.clone());
                                 self.current_path = parent.to_path_buf();
-                                self.update_index();
+                                // self.update_index();
                             }
                         }
                         if ui.button("<--").on_hover_text("To the previous directory").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
                             if let Some(future_path) = self.path_history.pop(){
                                 self.current_path = future_path;
-                                self.update_index();
+                                // self.update_index();
                             }
                         }
                         ui.label(format!("Текущий путь: {}", self.current_path.to_string_lossy())); //можно поменять to_string_lossy на display??
@@ -238,6 +279,13 @@ impl eframe::App for FileExplorer {
                             if ui.button("🔄").on_hover_text("Update this directory(F5)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
                                 self.update_index();
                             }
+                            let count = self.index_count.load(atomic::Ordering::Relaxed);
+                            let time = if let Ok(t) = self.index_time.read() { *t } else { std::time::Duration::ZERO };
+
+                            ui.label(format!(
+                                "Найдено объектов: {} | Время индексации: {:.2?}", 
+                                count, time
+                            ));
                         } else {
                             ui.spinner();
                         }
@@ -328,7 +376,7 @@ impl eframe::App for FileExplorer {
                                 self.path_history.push(self.current_path.clone());
                                 self.current_path = path;
                                 self.search_query.clear();
-                                self.update_index();
+                                // self.update_index();
                             } else {
                                 let _ = opener::open(path); 
                                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
