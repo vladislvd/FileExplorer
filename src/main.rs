@@ -1,11 +1,11 @@
 use eframe::egui;
-use walkdir::WalkDir;
 use core::f32;
-use std::{path::PathBuf, sync::mpsc::{Receiver, channel}, thread, time::SystemTime};
-use regex;
+use std::{path::PathBuf, sync::{atomic, mpsc::channel}, thread, time::SystemTime};
+use std::sync::{Arc, RwLock, atomic::AtomicBool};
+use rayon::prelude::*;
 
 
-#[derive(Default, PartialEq)]
+#[derive(Default, PartialEq, Clone)]
 pub enum SortBy {
     #[default]
     Date,
@@ -18,10 +18,9 @@ struct FileExplorer {
     current_path: PathBuf,
     path_history: Vec<PathBuf>,
     search_query: String,
-    search_result: Vec<PathBuf>,
-    search_rx: Option<Receiver<PathBuf>>,
     zoom_factor: f32,
-    cached_files: Vec<FileInfo>,
+    static_index: Arc<RwLock<Vec<FileInfo>>>,
+    is_indexing: Arc<AtomicBool>,
     show_err: bool,
     text_err: String,
     sort_by: SortBy,
@@ -31,25 +30,28 @@ struct FileExplorer {
     search_venv: bool,
     search_whole_word: bool,
     match_case: bool,
+    search_everywhere: bool,
 }
 
 struct FileInfo {
     path: PathBuf,
-    filename: String,
+    name: String,
+    name_lower: String,
     is_dir: bool,
     created_at: SystemTime,
+    is_hidden: bool,
+    is_venv: bool,
 }
 
 impl FileExplorer{
     fn new(_cc: &eframe::CreationContext<'_>) -> Self{
-        let mut app =Self {  
+        let app = Self {  
             current_path: dirs::download_dir().unwrap_or_else(|| {std::env::current_dir().unwrap_or_else(|_| PathBuf::from("C:\\"))}),
             path_history: Vec::new(),
             search_query: String::new(),
-            search_result: Vec::new(),
-            search_rx: None,
             zoom_factor: 1.5,
-            cached_files: Vec::new(),
+            static_index: Arc::new(RwLock::new(Vec::new())),
+            is_indexing: Arc::new(AtomicBool::new(false)),
             show_err: false,
             text_err: String::new(),
             sort_by: SortBy::default(),
@@ -59,111 +61,104 @@ impl FileExplorer{
             search_venv: false,
             search_whole_word: true,
             match_case: true, //=учитывать регистр
+            search_everywhere: true,
         };
-        app.refresh_cache();
 
+        app.update_index();
         app
     }
 
-    fn search(&mut self, ctx: &egui::Context) {
-        if self.search_query.trim().is_empty() { return; }
-        let (tx, rx) = channel();
-        let query = self.search_query.clone();
-        let root_to_scan = self.current_path.clone(); //PathBuf::from("C://"); // dirs::home_dir().unwrap_or_else(|| self.current_path.clone()); - должна быть опция
-        self.search_result.clear();
-        self.search_rx = Some(rx);
-        let search_hidden = self.search_hidden;
-        let search_venv = self.search_venv;
-        let search_whole_word = self.search_whole_word;
-        let match_case = self.match_case;
-        let ctx_clone = ctx.clone();
+    fn update_index(&self){
+        let index_prt = Arc::clone(&self.static_index);
+        let is_indexing = Arc::clone(&self.is_indexing);
+        let root = self.current_path.clone();
+
         thread::spawn(move || {
-            let walker = WalkDir::new(&root_to_scan)
-                .into_iter()
-                .filter_entry(move |e| {
-                    if e.path() == root_to_scan { return true; }
-                    let name = e.file_name().to_string_lossy();
-                    let is_hidden = !search_hidden && name.starts_with(".") && hf::is_hidden(e.path()).unwrap_or(false);
-                    let is_venv = !search_venv && name=="venv";
-                    !(is_hidden || is_venv)
-                });
-            let escaped_query = regex::escape(&query);
-            let pattern = if search_whole_word{
-                format!(r"\b{}\b", escaped_query)
-            } else {
-                escaped_query
-            };
-            let re = regex::RegexBuilder::new(&pattern)
-                .case_insensitive(!match_case)
-                .build()
-                .unwrap();
-            for file in walker.filter_map(|e| e.ok()){
-                let name = file.file_name().to_string_lossy();
-                if re.is_match(&name){
-                    if tx.send(file.path().to_path_buf()).is_err(){
-                        break;
-                    } else {
-                        ctx_clone.request_repaint();
-                    }                
-                }
+            is_indexing.store(true, atomic::Ordering::SeqCst);
+            let (tx, rx) = channel();
+            let walker = ignore::WalkBuilder::new(root).threads(num_cpus::get()).build_parallel();
+            walker.run(|| {
+                let tx = tx.clone();
+                Box::new(move |result| {
+                    if let Ok(entry) = result{
+                        let path = entry.path().to_path_buf();
+                        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                        let meta = path.metadata().ok();
+                        let info = FileInfo{
+                            is_hidden: name.starts_with(".") || hf::is_hidden(&path).unwrap_or(false),
+                            name_lower: name.to_lowercase(),
+                            name: name,
+                            is_dir: path.is_dir(),
+                            created_at: meta.and_then(|m| m.created().ok()).unwrap_or(std::time::SystemTime::now()),
+                            is_venv: path.components().any(|c| c.as_os_str() == "venv"),
+                            path: path
+                        };
+                        let _ = tx.send(info);
+                    }
+                    ignore::WalkState::Continue
+                })
+            });
+            drop(tx);
+            let data: Vec<_> = rx.into_iter().collect();
+            if let Ok(mut lock) = index_prt.write() {
+                *lock = data;
             }
+            is_indexing.store(false, atomic::Ordering::SeqCst);
         });
+
     }
 
-    fn refresh_cache(&mut self){
-        // println!("Обновление кэша для пути: {:?}", self.current_path);
-        match std::fs::read_dir(&self.current_path) {
-            Ok(files) => {
-                let mut new_files: Vec<FileInfo> = files.
-                filter_map(|e| {
-                    let file = match e {
-                        Ok(val ) => val,
-                        Err(err) => {
-                            self.text_err = String::from(format!("File read error: {}", err));
-                            self.show_err = true;
-                            return None;
-                        }
-                    };
-                    let path = file.path();
-                    if !self.show_hidden && hf::is_hidden(&path).unwrap_or(false){
-                        return None;
-                    }
-                    let meta = file.metadata().ok();
-                    Some(FileInfo {
-                        filename: path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown".to_string()),
-                        is_dir: path.is_dir(),
-                        path: path,
-                        created_at: meta.and_then(|m| m.created().ok()).unwrap_or(std::time::SystemTime::now()),
-                    })
-                })
-                .collect();
-                new_files.sort_by(|a, b| {
-                    let result = match self.sort_by {
-                        SortBy::Name => a.filename.to_lowercase().cmp(&b.filename.to_lowercase()),
-                        SortBy::Date => a.created_at.cmp(&b.created_at),
-                        SortBy::Type => {
-                            if a.is_dir != b.is_dir { 
-                                b.is_dir.cmp(&a.is_dir)
-                            } else {
-                                a.filename.to_lowercase().cmp(&b.filename.to_lowercase())
-                            }
-                        },
-                    };
-                    if self.sort_ascending {
-                        result 
+    fn files_sorting<'a>(&'a self, index: &'a [FileInfo]) -> Vec<&'a FileInfo> {
+        let current_path = &self.current_path;
+        let query = if self.match_case { self.search_query.clone() } else { self.search_query.to_lowercase() };
+        let search_hidden = self.search_hidden;
+        let search_venv = self.search_venv;
+        let search_everywhere = self.search_everywhere;
+        let search_whole_word = self.search_whole_word;
+        let match_case = self.match_case;
+        let show_hidden = self.show_hidden;
+        let sort_ascending = self.sort_ascending;
+        let sort_by = SortBy::clone(&self.sort_by);
+
+        let mut filtred_files: Vec<&'a FileInfo> = if query.is_empty(){
+            index.par_iter().filter(|file|{
+                if !show_hidden && file.is_hidden { return false; }
+                file.path.parent().map_or(false, |p| p == current_path)
+            }).collect()
+        } else {
+            index.par_iter().filter(|file|{
+                let target = if match_case { &file.name } else { &file.name_lower };
+                if !search_hidden && file.is_hidden { return false; }
+                if !search_venv && file.is_venv { return false; }
+                if !search_everywhere && !file.path.starts_with(&current_path) { return false; }
+                if search_whole_word {
+                    target == &query
+                } else {
+                    target.contains(&query)
+                }
+            }).take_any(500)
+            .collect()
+        };
+
+        filtred_files.par_sort_by(|a, b|{
+            let result =match sort_by {
+                SortBy::Date => a.created_at.cmp(&b.created_at),
+                SortBy::Name => a.name_lower.cmp(&b.name_lower),
+                SortBy::Type => {
+                    if a.is_dir != b.is_dir {
+                        b.is_dir.cmp(&a.is_dir)
                     } else {
-                        result.reverse() 
+                        a.name_lower.cmp(&b.name_lower)
                     }
-                });
-                self.cached_files = new_files;
-            }
-            Err(err) => {
-                self.text_err = String::from(format!("Directory read error: {}", err));
-                self.show_err = true;
-            }
-        }
+                }
+            };
+            if sort_ascending { result } else { result.reverse() }
+        });
+        filtred_files
     }
 }
+
+
 
 fn main() -> eframe::Result<(), eframe::Error>{
     let options = eframe::NativeOptions{
@@ -181,43 +176,24 @@ fn main() -> eframe::Result<(), eframe::Error>{
     )
 }
 
-fn draw_item(ui: &mut egui::Ui, path: &PathBuf, app: &mut FileExplorer, _ctx: &egui::Context) {
+fn draw_item(ui: &mut egui::Ui, path: &PathBuf, zoom_factor: f32) -> Option<PathBuf>{
     let filename = path.file_name().unwrap_or_default().to_string_lossy();
     let is_dir = path.is_dir();
     let icon = if is_dir { "📁" } else { "📄" };
+    let mut clicked_path = None;
     ui.scope(|ui|{
-        ui.style_mut().spacing.button_padding *= app.zoom_factor;
+        ui.style_mut().spacing.button_padding *= zoom_factor;
         if ui.selectable_label(false, format!("{} {}", icon, filename)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-            let cur_path = app.current_path.clone();
-            if path.exists(){
-                if is_dir {
-                    app.path_history.push(cur_path);
-                    app.current_path = path.clone();
-                    app.search_query.clear();
-                    app.search_rx = None;
-                    app.refresh_cache();
-                } else {
-                    let _ = opener::open(path); 
-                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
-                }
-            } else {
-                app.text_err = String::from("Файл не найден.");
-                app.show_err = true;
-            }
+            clicked_path = Some(path.to_path_buf());
         }
     });
+    clicked_path
 }
 
 
 impl eframe::App for FileExplorer {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_pixels_per_point(self.zoom_factor);
-        if let Some(ref rx) = self.search_rx{
-            while let Ok(path) = rx.try_recv() {
-                self.search_result.push(path);
-                ctx.request_repaint();
-            }
-        }
         if self.show_err{
             egui::Window::new("Error")
             .fixed_size([105.0,25.0])
@@ -226,7 +202,7 @@ impl eframe::App for FileExplorer {
                     ui.label(&self.text_err);
                     if ui.add_sized([50.0, 25.0], egui::Button::new("Ok")).clicked(){
                         self.show_err = false;
-                        self.refresh_cache();
+                        // self.refresh_cache();
                     }
                 });
             });
@@ -241,52 +217,44 @@ impl eframe::App for FileExplorer {
                             if let Some(home_dir) = dirs::home_dir(){
                                 self.path_history.push(self.current_path.clone());
                                 self.current_path = home_dir;
-                                self.refresh_cache();
+                                self.update_index();
                             }
                         }
                         if ui.button("^").on_hover_text("To the parent directory").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {  //изменить ширину
                             if let Some(parent) = self.current_path.parent() {
                                 self.path_history.push(self.current_path.clone());
                                 self.current_path = parent.to_path_buf();
-                                self.refresh_cache();
+                                self.update_index();
                             }
                         }
                         if ui.button("<--").on_hover_text("To the previous directory").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
                             if let Some(future_path) = self.path_history.pop(){
                                 self.current_path = future_path;
-                                self.refresh_cache();
+                                self.update_index();
                             }
                         }
                         ui.label(format!("Текущий путь: {}", self.current_path.to_string_lossy())); //можно поменять to_string_lossy на display??
-                        if ui.button("🔄").on_hover_text("Update this directory(F5)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
-                            self.refresh_cache();
+                        if !self.is_indexing.clone().load(atomic::Ordering::Relaxed){
+                            if ui.button("🔄").on_hover_text("Update this directory(F5)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
+                                self.update_index();
+                            }
+                        } else {
+                            ui.spinner();
                         }
                 });
                 ui.add_space(10.0);
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.menu_button("⚙ View and sort 🔽", |ui|{
                         ui.set_min_width(150.0);
-                        if ui.checkbox(&mut self.show_hidden, "Show hidden").clicked(){
-                            self.refresh_cache();
-                        }
+                        ui.checkbox(&mut self.show_hidden, "Show hidden");
                         ui.separator();
                         ui.label("Sort by:");
-                        if ui.radio_value(&mut self.sort_by, SortBy::Date, "Date").clicked() {
-                            self.refresh_cache();
-                        }
-                        if ui.radio_value(&mut self.sort_by, SortBy::Name, "Name").clicked() {
-                            self.refresh_cache();
-                        }
-                        if ui.radio_value(&mut self.sort_by, SortBy::Type, "Type").clicked() {
-                            self.refresh_cache();
-                        }
+                        ui.radio_value(&mut self.sort_by, SortBy::Date, "Date");
+                        ui.radio_value(&mut self.sort_by, SortBy::Name, "Name");
+                        ui.radio_value(&mut self.sort_by, SortBy::Type, "Type");
                         ui.separator();
-                        if ui.radio_value(&mut self.sort_ascending, true, "⬆ Ascending (A-Z)").clicked(){
-                            self.refresh_cache();
-                        }
-                        if ui.radio_value(&mut self.sort_ascending, false, "⬇ Descending (Z-A)").clicked(){
-                            self.refresh_cache();
-                        }
+                        ui.radio_value(&mut self.sort_ascending, true, "⬆ Ascending (A-Z)");
+                        ui.radio_value(&mut self.sort_ascending, false, "⬇ Descending (Z-A)");
                     });
                 }); 
                 ui.add_space(50.0);
@@ -307,9 +275,6 @@ impl eframe::App for FileExplorer {
                         );
                         if search_bar.hovered(){
                             ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
-                        }
-                        if search_bar.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)){ //response.lost_focus() - закончил ли пользователь взаимодействовать с search_bar
-                            self.search(ctx);
                         }
                         if !self.search_query.is_empty(){
                             if ui.button("❌").on_hover_text("Clear the search bar").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
@@ -340,22 +305,37 @@ impl eframe::App for FileExplorer {
                 .auto_shrink([false; 2])
                 .show(ui, |ui|{
                     ui.set_min_width(ui.available_width());
-                    if !self.search_query.is_empty() && self.search_rx.is_some() {
-                        ui.label("Результаты глубокого поиска:");
-                        let search_result: Vec<PathBuf> = self.search_result.iter().cloned().collect();
-                        for path in search_result {
-                            draw_item(ui, &path, self, ctx);
+                    let mut action_path = None;
+                    if let Ok(index) = self.static_index.read(){
+                        let files = self.files_sorting(&index);
+                        if files.is_empty() {
+                            if !self.search_query.is_empty() {
+                                ui.label("Nothing was found");
+                            } else {
+                                ui.label("Поиск...");
+                            }
+                        } else {
+                            for file in files{
+                                if let Some(p) = draw_item(ui, &file.path, self.zoom_factor) {
+                                    action_path = Some(p);
+                                }   
+                            }
                         }
-                    } else {
-                        let files_to_draw: Vec<PathBuf> = self.cached_files.iter().filter(|info|{
-                            if self.search_query.is_empty() {return true;}
-                            info.filename.contains(&self.search_query.to_lowercase())
-                        })
-                        .map(|info| info.path.clone())
-                        .collect();
-
-                        for path in files_to_draw {
-                            draw_item(ui, &path, self, ctx);
+                    }
+                    if let Some(path) = action_path {
+                        if path.exists(){
+                            if path.is_dir() {
+                                self.path_history.push(self.current_path.clone());
+                                self.current_path = path;
+                                self.search_query.clear();
+                                self.update_index();
+                            } else {
+                                let _ = opener::open(path); 
+                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+                            }
+                        } else {
+                            self.text_err = String::from("Файл не найден.");
+                            self.show_err = true;
                         }
                     }
                 });
