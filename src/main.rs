@@ -3,6 +3,9 @@ use core::{f32, time};
 use std::{path::PathBuf, sync::atomic, thread, time::SystemTime, os::windows::fs::MetadataExt};
 use std::sync::{Arc, RwLock, atomic::AtomicBool};
 use rayon::prelude::*;
+use egui_extras::{TableBuilder, Column};
+use chrono;
+use smol_str::SmolStr;
 
 #[derive(Default, PartialEq, Clone)]
 pub enum SortBy {
@@ -32,11 +35,12 @@ struct FileExplorer {
     search_everywhere: bool,
     index_time: Arc<RwLock<std::time::Duration>>,
     index_count: Arc<std::sync::atomic::AtomicUsize>,
+    index_all: bool,
 }
 
 struct FileInfo {
     path: PathBuf,
-    name: String,
+    name: SmolStr,
     is_dir: bool,
     created_at: SystemTime,
     is_hidden: bool,
@@ -64,6 +68,7 @@ impl FileExplorer{
             search_everywhere: true,
             index_time: Arc::new(RwLock::new(time::Duration::new(0, 0))),
             index_count: Arc::new(atomic::AtomicUsize::new(0)),
+            index_all: false
         };
 
         app.update_index();
@@ -76,12 +81,18 @@ impl FileExplorer{
         let index_time = Arc::clone(&self.index_time);
         let index_count = Arc::clone(&self.index_count);
         let root = PathBuf::from("C://");
+        let index_all = self.index_all.clone();
+        // let root = PathBuf::clone(&self.current_path);
 
         thread::spawn(move || {
             let start_time = std::time::Instant::now();
             is_indexing.store(true, atomic::Ordering::SeqCst);
-            let walker = ignore::WalkBuilder::new(root)
-                .filter_entry(|e|{
+            let mut builder = ignore::WalkBuilder::new(root);
+            builder.hidden(false)
+                .follow_links(false)
+                .threads(num_cpus::get());
+            if !index_all {
+                builder.filter_entry(|e|{
                     let path = e.path();
                     if let Some(ext) = path.extension() {
                         if ext == "log" {
@@ -97,10 +108,9 @@ impl FileExplorer{
                     name != "AppData" &&
                     name != "Default" && 
                     name != "Recovery"
-                })
-                .hidden(false)
-                .follow_links(false)
-                .threads(num_cpus::get()).build_parallel();
+                });
+            }
+            let walker = builder.build_parallel();
             let all_files = Arc::new(parking_lot::Mutex::new(Vec::with_capacity(800000)));
 
             walker.run(|| {
@@ -121,7 +131,7 @@ impl FileExplorer{
                         buffer.push(FileInfo{
                             is_hidden: is_hidden,
                             is_venv: name == "venv",
-                            name: name.into_owned(),
+                            name: SmolStr::new(&name),
                             is_dir: entry.file_type().map(|t| t.is_dir()).unwrap_or(false),
                             created_at: entry.metadata().ok().and_then(|m| m.created().ok()).unwrap_or(std::time::SystemTime::now()),
                             path: entry.into_path(),
@@ -149,8 +159,8 @@ impl FileExplorer{
 
     fn files_sorting<'a>(&'a self, index: &'a [FileInfo]) -> Vec<&'a FileInfo> {
         let current_path = &self.current_path;
-        let query = if self.match_case { self.search_query.clone() } else { self.search_query.to_lowercase() };
         let search_hidden = self.search_hidden;
+        let query = self.search_query.as_str();
         let search_venv = self.search_venv;
         let search_everywhere = self.search_everywhere;
         let search_whole_word = self.search_whole_word;
@@ -166,15 +176,27 @@ impl FileExplorer{
             }).collect()
         } else {
             index.par_iter().filter(|file|{
-                let target = if match_case { &file.name } else { &file.name.to_lowercase() };
                 if !search_hidden && file.is_hidden { return false; }
                 if !search_venv && file.is_venv { return false; }
                 if !search_everywhere && !file.path.starts_with(&current_path) { return false; }
+            if match_case {
                 if search_whole_word {
-                    target == &query
+                    file.name == query
                 } else {
-                    target.contains(&query)
+                    file.name.contains(query)
                 }
+            } else {
+                if search_whole_word {
+                    file.name.eq_ignore_ascii_case(query)
+                } else {
+                    if query.is_empty() { return true; }
+                    file.name.as_bytes()
+                        .windows(query.len())
+                        .any(|window| {
+                            window.eq_ignore_ascii_case(query.as_bytes())
+                        })
+                }
+            }
             }).take_any(500)
             .collect()
         };
@@ -204,7 +226,6 @@ impl FileExplorer{
 fn main() -> eframe::Result<(), eframe::Error>{
     let options = eframe::NativeOptions{
         viewport:egui::ViewportBuilder::default()
-            // .with_inner_size([800.0, 300.0])
             .with_drag_and_drop(true)
             .with_resizable(true)
             .with_maximized(true),
@@ -243,7 +264,6 @@ impl eframe::App for FileExplorer {
                     ui.label(&self.text_err);
                     if ui.add_sized([50.0, 25.0], egui::Button::new("Ok")).clicked(){
                         self.show_err = false;
-                        // self.refresh_cache();
                     }
                 });
             });
@@ -258,25 +278,22 @@ impl eframe::App for FileExplorer {
                             if let Some(home_dir) = dirs::home_dir(){
                                 self.path_history.push(self.current_path.clone());
                                 self.current_path = home_dir;
-                                // self.update_index();
                             }
                         }
                         if ui.button("^").on_hover_text("To the parent directory").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {  //изменить ширину
                             if let Some(parent) = self.current_path.parent() {
                                 self.path_history.push(self.current_path.clone());
                                 self.current_path = parent.to_path_buf();
-                                // self.update_index();
                             }
                         }
                         if ui.button("<--").on_hover_text("To the previous directory").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
                             if let Some(future_path) = self.path_history.pop(){
                                 self.current_path = future_path;
-                                // self.update_index();
                             }
                         }
                         ui.label(format!("Текущий путь: {}", self.current_path.to_string_lossy())); //можно поменять to_string_lossy на display??
                         if !self.is_indexing.clone().load(atomic::Ordering::Relaxed){
-                            if ui.button("🔄").on_hover_text("Update this directory(F5)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
+                            if ui.button("🔄").on_hover_text("Update cache(F5)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
                                 self.update_index();
                             }
                             let count = self.index_count.load(atomic::Ordering::Relaxed);
@@ -293,16 +310,24 @@ impl eframe::App for FileExplorer {
                 ui.add_space(10.0);
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.menu_button("⚙ View and sort 🔽", |ui|{
-                        ui.set_min_width(150.0);
-                        ui.checkbox(&mut self.show_hidden, "Show hidden");
-                        ui.separator();
-                        ui.label("Sort by:");
-                        ui.radio_value(&mut self.sort_by, SortBy::Date, "Date");
-                        ui.radio_value(&mut self.sort_by, SortBy::Name, "Name");
-                        ui.radio_value(&mut self.sort_by, SortBy::Type, "Type");
-                        ui.separator();
-                        ui.radio_value(&mut self.sort_ascending, true, "⬆ Ascending (A-Z)");
-                        ui.radio_value(&mut self.sort_ascending, false, "⬇ Descending (Z-A)");
+                        ui.set_width(150.0);
+                        ui.horizontal(|ui|{
+                            ui.vertical(|ui|{
+                                ui.checkbox(&mut self.show_hidden, "Show hidden");
+                                ui.separator();
+                                ui.label("Sort by:");
+                                ui.radio_value(&mut self.sort_by, SortBy::Date, "Date");
+                                ui.radio_value(&mut self.sort_by, SortBy::Name, "Name");
+                                ui.radio_value(&mut self.sort_by, SortBy::Type, "Type");
+                                ui.separator();
+                                ui.radio_value(&mut self.sort_ascending, true, "⬆ Ascending (A-Z)");
+                                ui.radio_value(&mut self.sort_ascending, false, "⬇ Descending (Z-A)");
+                            });
+                            ui.separator();
+                            if ui.checkbox(&mut self.index_all, "Indexing all").clicked(){
+                                self.update_index();
+                            }
+                        });
                     });
                 }); 
                 ui.add_space(50.0);
@@ -313,6 +338,7 @@ impl eframe::App for FileExplorer {
                             ui.set_min_width(150.0);
                             ui.checkbox(&mut self.search_hidden, "Search hidden");
                             ui.checkbox(&mut self.search_venv, "Search venv");
+                            ui.checkbox(&mut self.search_everywhere, "Seacrh anywhere");
                             ui.checkbox(&mut self.search_whole_word, "Search the whole world");
                             ui.checkbox(&mut self.match_case, "Keep the case");
                         });
@@ -348,26 +374,42 @@ impl eframe::App for FileExplorer {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical()
-                .max_width(f32::INFINITY)
-                .auto_shrink([false; 2])
-                .show(ui, |ui|{
-                    ui.set_min_width(ui.available_width());
                     let mut action_path = None;
                     if let Ok(index) = self.static_index.read(){
                         let files = self.files_sorting(&index);
                         if files.is_empty() {
                             if !self.search_query.is_empty() {
                                 ui.label("Nothing was found");
-                            } else {
-                                ui.label("Поиск...");
                             }
                         } else {
-                            for file in files{
-                                if let Some(p) = draw_item(ui, &file.path, self.zoom_factor) {
-                                    action_path = Some(p);
-                                }   
-                            }
+                            TableBuilder::new(ui)
+                            .striped(true)
+                            .resizable(true)
+                            .column(Column::remainder().at_least(100.0))
+                            .column(Column::remainder().at_least(100.0))
+                            .column(Column::remainder().at_least(100.0))
+                            .header(25.0, |mut header|{
+                                header.col(|ui| { ui.strong("Name"); });
+                                header.col(|ui| { ui.strong("Path"); });
+                                header.col(|ui| { ui.strong("Created at"); });
+                            })
+                            .body(|body| {
+                                body.rows(20.0 *self.zoom_factor, files.len(), |mut row| {
+                                    let file = &files[row.index()];
+                                    row.col(|ui|{
+                                        if let Some(p) = draw_item(ui, &file.path, self.zoom_factor) {
+                                            action_path = Some(p);
+                                        }
+                                    });
+                                    row.col(|ui|{
+                                        ui.add(egui::Label::new(file.path.to_string_lossy()).truncate());
+                                    });
+                                    row.col(|ui|{
+                                        let dt: chrono::DateTime<chrono::Local> = file.created_at.into();
+                                        ui.label(dt.format("%d.%m.%y %H:%M").to_string());
+                                    });
+                                });
+                            });
                         }
                     }
                     if let Some(path) = action_path {
@@ -375,8 +417,6 @@ impl eframe::App for FileExplorer {
                             if path.is_dir() {
                                 self.path_history.push(self.current_path.clone());
                                 self.current_path = path;
-                                self.search_query.clear();
-                                // self.update_index();
                             } else {
                                 let _ = opener::open(path); 
                                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
@@ -387,6 +427,5 @@ impl eframe::App for FileExplorer {
                         }
                     }
                 });
-        });
     }
 }
