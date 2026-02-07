@@ -1,11 +1,13 @@
 use eframe::egui;
 use core::{f32, time};
+use std::time::Duration;
 use std::{path::PathBuf, sync::atomic, thread, time::SystemTime, os::windows::fs::MetadataExt};
-use std::sync::{Arc, RwLock, atomic::AtomicBool};
+use std::sync::{Arc, RwLock, atomic::AtomicBool, mpsc::{channel, Receiver}};
 use rayon::prelude::*;
 use egui_extras::{TableBuilder, Column};
 use chrono;
 use smol_str::SmolStr;
+use sysinfo::{self, Disks};
 
 #[derive(Default, PartialEq, Clone)]
 pub enum SortBy {
@@ -23,6 +25,9 @@ struct FileExplorer {
     zoom_factor: f32,
     static_index: Arc<RwLock<Vec<FileInfo>>>,
     is_indexing: Arc<AtomicBool>,
+    disk_receiver: Receiver<Disks>,
+    current_disk: PathBuf,
+    all_disks: Vec<DiskInfo>,
     show_err: bool,
     text_err: String,
     sort_by: SortBy,
@@ -38,6 +43,14 @@ struct FileExplorer {
     index_all: bool,
 }
 
+struct DiskInfo {
+    name: String,
+    mount_point: PathBuf,
+    mount_point_str: String,
+    total_gb: String,
+    available_gb: String,
+}
+
 struct FileInfo {
     path: PathBuf,
     name: SmolStr,
@@ -49,6 +62,15 @@ struct FileInfo {
 
 impl FileExplorer{
     fn new(_cc: &eframe::CreationContext<'_>) -> Self{
+        let (tx, rx) = channel();
+        thread::spawn(move || {
+            loop{
+                let disks = Disks::new_with_refreshed_list();
+                if tx.send(disks).is_err() { break; }
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+
         let app = Self {  
             current_path: dirs::download_dir().unwrap_or_else(|| {std::env::current_dir().unwrap_or_else(|_| PathBuf::from("C:\\"))}),
             path_history: Vec::new(),
@@ -56,6 +78,9 @@ impl FileExplorer{
             zoom_factor: 1.5,
             static_index: Arc::new(RwLock::new(Vec::new())),
             is_indexing: Arc::new(AtomicBool::new(false)),
+            current_disk: PathBuf::from("C://"),
+            all_disks: Vec::new(),
+            disk_receiver: rx,
             show_err: false,
             text_err: String::new(),
             sort_by: SortBy::default(),
@@ -80,9 +105,17 @@ impl FileExplorer{
         let is_indexing = Arc::clone(&self.is_indexing);
         let index_time = Arc::clone(&self.index_time);
         let index_count = Arc::clone(&self.index_count);
-        let root = PathBuf::from("C://");
+        let mut root = self.current_disk.clone();
         let index_all = self.index_all.clone();
-        // let root = PathBuf::clone(&self.current_path);
+
+        #[cfg(windows)]
+        {
+            let path_str = root.to_string_lossy();
+            if path_str.len() == 2 && path_str.ends_with(":") {
+                root = PathBuf::from(format!("{}\\", path_str));
+            }
+        }
+        // println!("DEBUG: Итоговый путь для сканирования: {:?}", root);
 
         thread::spawn(move || {
             let start_time = std::time::Instant::now();
@@ -90,6 +123,7 @@ impl FileExplorer{
             let mut builder = ignore::WalkBuilder::new(root);
             builder.hidden(false)
                 .follow_links(false)
+                .same_file_system(false)
                 .threads(num_cpus::get());
             if !index_all {
                 builder.filter_entry(|e|{
@@ -252,9 +286,22 @@ fn draw_item(ui: &mut egui::Ui, path: &PathBuf, zoom_factor: f32) -> Option<Path
     clicked_path
 }
 
-
 impl eframe::App for FileExplorer {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Ok(new_disks) = self.disk_receiver.try_recv(){
+            self.all_disks.clear();
+            for disk in &new_disks{
+                let name = disk.name().to_string_lossy().into_owned();
+                let info = DiskInfo {
+                    name: if !name.is_empty() { name } else { "Storage device".to_string() },
+                    mount_point: disk.mount_point().to_path_buf(),
+                    mount_point_str: disk.mount_point().to_string_lossy().into_owned(),
+                    total_gb: format!("{:.2}",disk.total_space() as f64 / 1_000_000_000.0).to_string(),
+                    available_gb: format!("{:.2}",disk.available_space() as f64 / 1_000_000_000.0).to_string(),
+                };
+                self.all_disks.push(info);
+            }
+        }
         ctx.set_pixels_per_point(self.zoom_factor);
         if self.show_err{
             egui::Window::new("Error")
@@ -313,18 +360,18 @@ impl eframe::App for FileExplorer {
                         ui.set_width(150.0);
                         ui.horizontal(|ui|{
                             ui.vertical(|ui|{
-                                ui.checkbox(&mut self.show_hidden, "Show hidden");
+                                ui.checkbox(&mut self.show_hidden, "Show hidden").on_hover_cursor(egui::CursorIcon::PointingHand);
                                 ui.separator();
                                 ui.label("Sort by:");
-                                ui.radio_value(&mut self.sort_by, SortBy::Date, "Date");
-                                ui.radio_value(&mut self.sort_by, SortBy::Name, "Name");
-                                ui.radio_value(&mut self.sort_by, SortBy::Type, "Type");
+                                ui.radio_value(&mut self.sort_by, SortBy::Date, "Date").on_hover_cursor(egui::CursorIcon::PointingHand);
+                                ui.radio_value(&mut self.sort_by, SortBy::Name, "Name").on_hover_cursor(egui::CursorIcon::PointingHand);
+                                ui.radio_value(&mut self.sort_by, SortBy::Type, "Type").on_hover_cursor(egui::CursorIcon::PointingHand);
                                 ui.separator();
-                                ui.radio_value(&mut self.sort_ascending, true, "⬆ Ascending (A-Z)");
-                                ui.radio_value(&mut self.sort_ascending, false, "⬇ Descending (Z-A)");
+                                ui.radio_value(&mut self.sort_ascending, true, "⬆ Ascending (A-Z)").on_hover_cursor(egui::CursorIcon::PointingHand);
+                                ui.radio_value(&mut self.sort_ascending, false, "⬇ Descending (Z-A)").on_hover_cursor(egui::CursorIcon::PointingHand);
                             });
                             ui.separator();
-                            if ui.checkbox(&mut self.index_all, "Indexing all").clicked(){
+                            if ui.checkbox(&mut self.index_all, "Indexing all").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
                                 self.update_index();
                             }
                         });
@@ -336,11 +383,11 @@ impl eframe::App for FileExplorer {
                     ui.group(|ui|{
                         ui.menu_button("🔽", |ui|{
                             ui.set_min_width(150.0);
-                            ui.checkbox(&mut self.search_hidden, "Search hidden");
-                            ui.checkbox(&mut self.search_venv, "Search venv");
-                            ui.checkbox(&mut self.search_everywhere, "Seacrh anywhere");
-                            ui.checkbox(&mut self.search_whole_word, "Search the whole world");
-                            ui.checkbox(&mut self.match_case, "Keep the case");
+                            ui.checkbox(&mut self.search_hidden, "Search hidden").on_hover_cursor(egui::CursorIcon::PointingHand);
+                            ui.checkbox(&mut self.search_venv, "Search venv").on_hover_cursor(egui::CursorIcon::PointingHand);
+                            ui.checkbox(&mut self.search_everywhere, "Seacrh anywhere").on_hover_cursor(egui::CursorIcon::PointingHand);
+                            ui.checkbox(&mut self.search_whole_word, "Search the whole world").on_hover_cursor(egui::CursorIcon::PointingHand);
+                            ui.checkbox(&mut self.match_case, "Keep the case").on_hover_cursor(egui::CursorIcon::PointingHand);
                         });
                         let search_bar = ui.add(
                             egui::TextEdit::singleline(&mut self.search_query)
@@ -366,11 +413,25 @@ impl eframe::App for FileExplorer {
 
         egui::SidePanel::left("left_panel")
             .resizable(true)
-            .default_width(100.0)
+            .default_width(200.0)
             .width_range(50.0..=screen_width - 50.0)
             .show(ctx, |ui| {
-                ui.heading("Меню");
-                ui.allocate_space(ui.available_size());
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::default()), |ui|{
+                    ui.vertical(|ui|{
+                        ui.label(egui::RichText::new("Disks: ").size(15.0));
+                        for disk in &self.all_disks {
+                            let new_path = disk.mount_point.clone();
+                            if ui.selectable_label(false, format!("{} ({})", disk.name, disk.mount_point_str))
+                                .on_hover_text(format!("Total space:{} Gb\nAvailable space: {} Gb", disk.total_gb, disk.available_gb))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked(){
+                                    self.current_disk = new_path.clone();
+                                    self.current_path = new_path;
+                                    self.update_index();
+                                }
+                        }
+                    });
+                });
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
