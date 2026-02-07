@@ -110,49 +110,62 @@ impl FileExplorer{
 
         #[cfg(windows)]
         {
-            let path_str = root.to_string_lossy();
+            let path_str = root.to_string_lossy().to_string();
             if path_str.len() == 2 && path_str.ends_with(":") {
                 root = PathBuf::from(format!("{}\\", path_str));
             }
+            if path_str.len() == 1 && path_str.chars().next().unwrap().is_ascii_alphabetic() {
+                root = PathBuf::from(format!("{}:\\",path_str));
+            }
         }
         // println!("DEBUG: Итоговый путь для сканирования: {:?}", root);
-
+        println!("root: {:?}", root.to_string_lossy().to_string());
+        println!("exist: {:?}", root.exists());
+        println!("dir: {:?}", root.is_dir());
         thread::spawn(move || {
             let start_time = std::time::Instant::now();
             is_indexing.store(true, atomic::Ordering::SeqCst);
             let mut builder = ignore::WalkBuilder::new(root);
             builder.hidden(false)
                 .follow_links(false)
-                .same_file_system(false)
+                // .same_file_system(false)
                 .threads(num_cpus::get());
             if !index_all {
                 builder.filter_entry(|e|{
+                    // println!("{:?} {}", e.path(), e.depth());
+                    if e.depth() == 0{
+                        return true;
+                    }
                     let path = e.path();
                     if let Some(ext) = path.extension() {
                         if ext == "log" {
                             return false;
                         }
                     }
-                    let name = e.file_name();
-                    name != "Windows" && 
-                    name != "$Recycle.Bin" && 
-                    name != "$SysReset" && 
-                    name != "hp" &&
-                    name != "System.sav" &&
-                    name != "AppData" &&
-                    name != "Default" && 
-                    name != "Recovery"
+                    match e.file_name().to_str() {
+                        Some("Windows") 
+                        | Some( "$Recycle.Bin") 
+                        | Some("$SysReset") 
+                        | Some("hp")
+                        | Some("System.sav")
+                        | Some("AppData")
+                        | Some("Default") 
+                        | Some("Recovery") => false,
+                        _ => true,
+                    }
+                    
                 });
             }
             let walker = builder.build_parallel();
             let all_files = Arc::new(parking_lot::Mutex::new(Vec::with_capacity(800000)));
-
             walker.run(|| {
+                let shared = Arc::clone(&all_files);
                 let shared_ptr = Arc::clone(&all_files);
-                let mut buffer = Vec::with_capacity(2048);
+                // let mut buffer = Vec::with_capacity(2048);
                 Box::new(move |result| {
-                    let buffer = &mut buffer;
+                    // let buffer = &mut buffer;
                     if let Ok(entry) = result{
+                        
                         let file_name_os = entry.file_name();
                         let name = file_name_os.to_string_lossy();
                         let meta = entry.metadata().ok();
@@ -161,8 +174,8 @@ impl FileExplorer{
                         if !is_hidden {
                             is_hidden = meta.map(|m| m.file_attributes() & 0x2 != 0).unwrap_or(false);
                         }
-
-                        buffer.push(FileInfo{
+                        
+                        shared.lock().push(FileInfo{
                             is_hidden: is_hidden,
                             is_venv: name == "venv",
                             name: SmolStr::new(&name),
@@ -170,10 +183,10 @@ impl FileExplorer{
                             created_at: entry.metadata().ok().and_then(|m| m.created().ok()).unwrap_or(std::time::SystemTime::now()),
                             path: entry.into_path(),
                         });
-                        if buffer.len() >= 2048 {
-                            let mut global_vec = shared_ptr.lock();
-                            global_vec.append(buffer);
-                        }
+                        // if buffer.len() >= 2048 {
+                        //     let mut global_vec = shared_ptr.lock();
+                        //     global_vec.append(buffer);
+                        // }
                     }
                     ignore::WalkState::Continue
                 })
