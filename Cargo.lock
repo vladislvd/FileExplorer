@@ -21,6 +21,7 @@ dependencies = [
  "smol_str",
  "sysinfo",
  "whoami",
+ "winapi",
 ]
 
 [[package]]

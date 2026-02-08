@@ -1,5 +1,6 @@
 use eframe::egui;
 use core::{f32, time};
+use std::cmp;
 use std::time::Duration;
 use std::{path::PathBuf, sync::atomic, thread, time::SystemTime, os::windows::fs::MetadataExt};
 use std::sync::{Arc, RwLock, atomic::AtomicBool, mpsc::{channel, Receiver}};
@@ -8,6 +9,9 @@ use egui_extras::{TableBuilder, Column};
 use chrono;
 use smol_str::SmolStr;
 use sysinfo::{self, Disks};
+use winapi::um::processthreadsapi::SetThreadPriority; //понижает приоритет индексатора в пользу ui
+use winapi::um::winbase::THREAD_PRIORITY_BELOW_NORMAL;
+
 
 #[derive(Default, PartialEq, Clone)]
 pub enum SortBy {
@@ -25,6 +29,7 @@ struct FileExplorer {
     zoom_factor: f32,
     static_index: Arc<RwLock<Vec<FileInfo>>>,
     is_indexing: Arc<AtomicBool>,
+    cancel_indexing: RwLock<Arc<AtomicBool>>,
     disk_receiver: Receiver<Disks>,
     current_disk: PathBuf,
     all_disks: Vec<DiskInfo>,
@@ -78,6 +83,7 @@ impl FileExplorer{
             zoom_factor: 1.5,
             static_index: Arc::new(RwLock::new(Vec::new())),
             is_indexing: Arc::new(AtomicBool::new(false)),
+            cancel_indexing: RwLock::new(Arc::new(AtomicBool::new(false))),
             current_disk: PathBuf::from("C://"),
             all_disks: Vec::new(),
             disk_receiver: rx,
@@ -101,6 +107,13 @@ impl FileExplorer{
     }
 
     fn update_index(&self){
+        self.cancel_indexing.read().unwrap().store(true, atomic::Ordering::SeqCst);
+        // self.cancel_indexing = Arc::new(AtomicBool::new(false));
+        let new_flag = Arc::new(AtomicBool::new(false));
+        let cancel_for_thread = Arc::clone(&new_flag);
+        if let Ok(mut lock) = self.cancel_indexing.write(){
+            *lock = new_flag;
+        }
         let index_prt = Arc::clone(&self.static_index);
         let is_indexing = Arc::clone(&self.is_indexing);
         let index_time = Arc::clone(&self.index_time);
@@ -118,21 +131,16 @@ impl FileExplorer{
                 root = PathBuf::from(format!("{}:\\",path_str));
             }
         }
-        // println!("DEBUG: Итоговый путь для сканирования: {:?}", root);
-        println!("root: {:?}", root.to_string_lossy().to_string());
-        println!("exist: {:?}", root.exists());
-        println!("dir: {:?}", root.is_dir());
         thread::spawn(move || {
+            thread::sleep(Duration::from_micros(50)); //ограничение частоты операций(io), чтобы дать системе дышать
             let start_time = std::time::Instant::now();
             is_indexing.store(true, atomic::Ordering::SeqCst);
             let mut builder = ignore::WalkBuilder::new(root);
             builder.hidden(false)
                 .follow_links(false)
-                // .same_file_system(false)
-                .threads(num_cpus::get());
+                .threads(cmp::max(2, num_cpus::get() / 2)); // ограничиваем количество ядер от двух до половины допустимых
             if !index_all {
                 builder.filter_entry(|e|{
-                    // println!("{:?} {}", e.path(), e.depth());
                     if e.depth() == 0{
                         return true;
                     }
@@ -158,14 +166,15 @@ impl FileExplorer{
             }
             let walker = builder.build_parallel();
             let all_files = Arc::new(parking_lot::Mutex::new(Vec::with_capacity(800000)));
+            // let cancel = Arc::clone(&cancel_for_thread);
             walker.run(|| {
+                let cancel = Arc::clone(&cancel_for_thread);
                 let shared = Arc::clone(&all_files);
-                let shared_ptr = Arc::clone(&all_files);
-                // let mut buffer = Vec::with_capacity(2048);
                 Box::new(move |result| {
-                    // let buffer = &mut buffer;
+                    if cancel.load(atomic::Ordering::Relaxed) {
+                        return ignore::WalkState::Quit;
+                    }
                     if let Ok(entry) = result{
-                        
                         let file_name_os = entry.file_name();
                         let name = file_name_os.to_string_lossy();
                         let meta = entry.metadata().ok();
@@ -183,14 +192,14 @@ impl FileExplorer{
                             created_at: entry.metadata().ok().and_then(|m| m.created().ok()).unwrap_or(std::time::SystemTime::now()),
                             path: entry.into_path(),
                         });
-                        // if buffer.len() >= 2048 {
-                        //     let mut global_vec = shared_ptr.lock();
-                        //     global_vec.append(buffer);
-                        // }
                     }
                     ignore::WalkState::Continue
                 })
             });
+            if cancel_for_thread.load(atomic::Ordering::Relaxed) {
+                is_indexing.store(false, atomic::Ordering::SeqCst);
+                return;
+            }
             let data = std::mem::take(&mut *all_files.lock());
             index_count.store(data.len(), atomic::Ordering::SeqCst);
             if let Ok(mut lock) = index_prt.write() {
@@ -501,5 +510,6 @@ impl eframe::App for FileExplorer {
                         }
                     }
                 });
+    ctx.request_repaint_after(std::time::Duration::from_secs(1));
     }
 }
