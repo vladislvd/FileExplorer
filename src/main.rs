@@ -1,15 +1,14 @@
 use eframe::egui;
-use core::{f32, time};
+use core::f32;
 use std::cmp;
 use std::time::Duration;
 use std::{path::PathBuf, sync::atomic, thread, time::SystemTime, os::windows::fs::MetadataExt};
-use std::sync::{Arc, RwLock, atomic::AtomicBool, mpsc::{channel, Receiver}};
+use std::sync::{Arc, RwLock, atomic::{AtomicBool, AtomicUsize}, mpsc::{channel, Receiver}};
 use rayon::prelude::*;
-use egui_extras::{TableBuilder, Column};
 use chrono;
 use smol_str::SmolStr;
 use sysinfo::{self, Disks};
-use winapi::um::processthreadsapi::SetThreadPriority; //понижает приоритет индексатора в пользу ui
+use winapi::um::processthreadsapi::{GetCurrentThread, SetThreadPriority}; //понижает приоритет индексатора в пользу ui
 use winapi::um::winbase::THREAD_PRIORITY_BELOW_NORMAL;
 
 
@@ -23,29 +22,42 @@ pub enum SortBy {
 
 
 struct FileExplorer {
+    // --- navigation ---
     current_path: PathBuf,
     path_history: Vec<PathBuf>,
-    search_query: String,
-    zoom_factor: f32,
+    current_disk: PathBuf,
+
+    // --- index ---
     static_index: Arc<RwLock<Vec<FileInfo>>>,
     is_indexing: Arc<AtomicBool>,
-    cancel_indexing: RwLock<Arc<AtomicBool>>,
-    disk_receiver: Receiver<Disks>,
-    current_disk: PathBuf,
-    all_disks: Vec<DiskInfo>,
-    show_err: bool,
-    text_err: String,
+    cancel_indexing: Arc<AtomicBool>,
+    index_time: Arc<RwLock<Duration>>,
+    index_count: Arc<AtomicUsize>,
+    index_all: bool,
+
+    // --- UI cache ---
+    visible_files: Vec<FileInfo>,
+    visible_dirty: bool,
+
+    // --- search / sort ---
+    search_query: String,
     sort_by: SortBy,
-    sort_ascending: bool, // true = А-Я, false = Я-А
+    sort_ascending: bool,
     show_hidden: bool,
     search_hidden: bool,
     search_venv: bool,
     search_whole_word: bool,
     match_case: bool,
     search_everywhere: bool,
-    index_time: Arc<RwLock<std::time::Duration>>,
-    index_count: Arc<std::sync::atomic::AtomicUsize>,
-    index_all: bool,
+
+    // --- UI ---
+    zoom_factor: f32,
+    show_err: bool,
+    text_err: String,
+
+    // --- disks ---
+    disk_receiver: Receiver<Disks>,
+    all_disks: Vec<DiskInfo>,
 }
 
 struct DiskInfo {
@@ -56,6 +68,7 @@ struct DiskInfo {
     available_gb: String,
 }
 
+#[derive(Clone)]
 struct FileInfo {
     path: PathBuf,
     name: SmolStr,
@@ -76,30 +89,37 @@ impl FileExplorer{
             }
         });
 
-        let app = Self {  
-            current_path: dirs::download_dir().unwrap_or_else(|| {std::env::current_dir().unwrap_or_else(|_| PathBuf::from("C:\\"))}),
+        let app = Self {
+            current_path: PathBuf::from("C:\\"),
             path_history: Vec::new(),
-            search_query: String::new(),
-            zoom_factor: 1.5,
+            current_disk: PathBuf::from("C:\\"),
+
             static_index: Arc::new(RwLock::new(Vec::new())),
             is_indexing: Arc::new(AtomicBool::new(false)),
-            cancel_indexing: RwLock::new(Arc::new(AtomicBool::new(false))),
-            current_disk: PathBuf::from("C://"),
-            all_disks: Vec::new(),
-            disk_receiver: rx,
-            show_err: false,
-            text_err: String::new(),
-            sort_by: SortBy::default(),
+            cancel_indexing: Arc::new(AtomicBool::new(false)),
+            index_time: Arc::new(RwLock::new(Duration::ZERO)),
+            index_count: Arc::new(AtomicUsize::new(0)),
+            index_all: false,
+
+            visible_files: Vec::new(),
+            visible_dirty: true,
+
+            search_query: String::new(),
+            sort_by: SortBy::Date,
             sort_ascending: true,
             show_hidden: false,
             search_hidden: false,
             search_venv: false,
             search_whole_word: true,
-            match_case: true, //=учитывать регистр
+            match_case: true,
             search_everywhere: true,
-            index_time: Arc::new(RwLock::new(time::Duration::new(0, 0))),
-            index_count: Arc::new(atomic::AtomicUsize::new(0)),
-            index_all: false
+
+            zoom_factor: 1.4,
+            show_err: false,
+            text_err: String::new(),
+
+            disk_receiver: rx,
+            all_disks: Vec::new(),
         };
 
         app.update_index();
@@ -107,13 +127,10 @@ impl FileExplorer{
     }
 
     fn update_index(&self){
-        self.cancel_indexing.read().unwrap().store(true, atomic::Ordering::SeqCst);
-        // self.cancel_indexing = Arc::new(AtomicBool::new(false));
-        let new_flag = Arc::new(AtomicBool::new(false));
-        let cancel_for_thread = Arc::clone(&new_flag);
-        if let Ok(mut lock) = self.cancel_indexing.write(){
-            *lock = new_flag;
-        }
+        self.cancel_indexing.store(true, atomic::Ordering::SeqCst);
+        self.cancel_indexing.store(false, atomic::Ordering::SeqCst);
+
+        let cancel = Arc::clone(&self.cancel_indexing);
         let index_prt = Arc::clone(&self.static_index);
         let is_indexing = Arc::clone(&self.is_indexing);
         let index_time = Arc::clone(&self.index_time);
@@ -132,7 +149,12 @@ impl FileExplorer{
             }
         }
         thread::spawn(move || {
+            unsafe {
+                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL as i32);
+            }
+
             thread::sleep(Duration::from_micros(50)); //ограничение частоты операций(io), чтобы дать системе дышать
+
             let start_time = std::time::Instant::now();
             is_indexing.store(true, atomic::Ordering::SeqCst);
             let mut builder = ignore::WalkBuilder::new(root);
@@ -165,10 +187,10 @@ impl FileExplorer{
                 });
             }
             let walker = builder.build_parallel();
-            let all_files = Arc::new(parking_lot::Mutex::new(Vec::with_capacity(800000)));
+            let all_files = Arc::new(parking_lot::Mutex::new(Vec::with_capacity(800_000)));
             // let cancel = Arc::clone(&cancel_for_thread);
             walker.run(|| {
-                let cancel = Arc::clone(&cancel_for_thread);
+                let cancel = Arc::clone(&cancel);
                 let shared = Arc::clone(&all_files);
                 Box::new(move |result| {
                     if cancel.load(atomic::Ordering::Relaxed) {
@@ -196,7 +218,7 @@ impl FileExplorer{
                     ignore::WalkState::Continue
                 })
             });
-            if cancel_for_thread.load(atomic::Ordering::Relaxed) {
+            if cancel.load(atomic::Ordering::Relaxed) {
                 is_indexing.store(false, atomic::Ordering::SeqCst);
                 return;
             }
@@ -213,7 +235,8 @@ impl FileExplorer{
 
     }
 
-    fn files_sorting<'a>(&'a self, index: &'a [FileInfo]) -> Vec<&'a FileInfo> {
+    fn rebuild_visible(&mut self) {
+        let index = self.static_index.read().unwrap();
         let current_path = &self.current_path;
         let search_hidden = self.search_hidden;
         let query = self.search_query.as_str();
@@ -221,60 +244,115 @@ impl FileExplorer{
         let search_everywhere = self.search_everywhere;
         let search_whole_word = self.search_whole_word;
         let match_case = self.match_case;
-        let show_hidden = self.show_hidden;
-        let sort_ascending = self.sort_ascending;
-        let sort_by = SortBy::clone(&self.sort_by);
-
-        let mut filtred_files: Vec<&'a FileInfo> = if query.is_empty(){
-            index.par_iter().filter(|file|{
-                if !show_hidden && file.is_hidden { return false; }
-                file.path.parent().map_or(false, |p| p == current_path)
-            }).collect()
+        
+        let mut filtered: Vec<FileInfo> = if query.is_empty() {
+            index.par_iter()
+                .filter(|file| {
+                    if !self.show_hidden && file.is_hidden { return false; }
+                    file.path.parent().map_or(false, |p| p == self.current_path)
+                })
+                .cloned() 
+                .collect()
         } else {
             index.par_iter().filter(|file|{
                 if !search_hidden && file.is_hidden { return false; }
                 if !search_venv && file.is_venv { return false; }
                 if !search_everywhere && !file.path.starts_with(&current_path) { return false; }
-            if match_case {
-                if search_whole_word {
-                    file.name == query
+                if match_case {
+                    if search_whole_word {
+                        file.name == query
+                    } else {
+                        file.name.contains(query)
+                    }
                 } else {
-                    file.name.contains(query)
+                    if search_whole_word {
+                        file.name.eq_ignore_ascii_case(query)
+                    } else {
+                        if query.is_empty() { return true; }
+                        file.name.as_bytes()
+                            .windows(query.len())
+                            .any(|window| {
+                                window.eq_ignore_ascii_case(query.as_bytes())
+                            })
+                    }
                 }
-            } else {
-                if search_whole_word {
-                    file.name.eq_ignore_ascii_case(query)
-                } else {
-                    if query.is_empty() { return true; }
-                    file.name.as_bytes()
-                        .windows(query.len())
-                        .any(|window| {
-                            window.eq_ignore_ascii_case(query.as_bytes())
-                        })
-                }
-            }
-            }).take_any(500)
+            })
+            .take_any(500)
+            .cloned()
             .collect()
         };
 
-        filtred_files.par_sort_by(|a, b|{
-            let a_low_name = a.name.to_lowercase();
-            let b_low_name = b.name.to_lowercase();
-            let result =match sort_by {
+        let sort_by = self.sort_by.clone();
+        let ascending = self.sort_ascending;
+
+        filtered.par_sort_by(move |a, b| {
+            let result = match sort_by {
                 SortBy::Date => a.created_at.cmp(&b.created_at),
-                SortBy::Name => a_low_name.cmp(&b_low_name),
-                SortBy::Type => {
-                    if a.is_dir != b.is_dir {
-                        b.is_dir.cmp(&a.is_dir)
-                    } else {
-                        a_low_name.cmp(&b_low_name)
-                    }
-                }
+                SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                SortBy::Type => b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)),
             };
-            if sort_ascending { result } else { result.reverse() }
+            if ascending { result } else { result.reverse() }
         });
-        filtred_files
+
+        self.visible_files = filtered;
+        self.visible_dirty = false;
     }
+
+    // fn files_sorting<'a>(&'a self, index: &'a [FileInfo]) -> Vec<&'a FileInfo> {
+        
+    //     let sort_ascending = self.sort_ascending;
+    //     let sort_by = SortBy::clone(&self.sort_by);
+
+    //     let mut filtred_files: Vec<&'a FileInfo> = if query.is_empty(){
+    //         index.par_iter().filter(|file|{
+    //             if !show_hidden && file.is_hidden { return false; }
+    //             file.path.parent().map_or(false, |p| p == current_path)
+    //         }).collect()
+    //     } else {
+    //         index.par_iter().filter(|file|{
+    //             if !search_hidden && file.is_hidden { return false; }
+    //             if !search_venv && file.is_venv { return false; }
+    //             if !search_everywhere && !file.path.starts_with(&current_path) { return false; }
+    //         if match_case {
+    //             if search_whole_word {
+    //                 file.name == query
+    //             } else {
+    //                 file.name.contains(query)
+    //             }
+    //         } else {
+    //             if search_whole_word {
+    //                 file.name.eq_ignore_ascii_case(query)
+    //             } else {
+    //                 if query.is_empty() { return true; }
+    //                 file.name.as_bytes()
+    //                     .windows(query.len())
+    //                     .any(|window| {
+    //                         window.eq_ignore_ascii_case(query.as_bytes())
+    //                     })
+    //             }
+    //         }
+    //         }).take_any(500)
+    //         .collect()
+    //     };
+
+    //     filtred_files.par_sort_by(|a, b|{
+    //         let a_low_name = a.name.to_lowercase();
+    //         let b_low_name = b.name.to_lowercase();
+    //         let result =match sort_by {
+    //             SortBy::Date => a.created_at.cmp(&b.created_at),
+    //             SortBy::Name => a_low_name.cmp(&b_low_name),
+    //             SortBy::Type => {
+    //                 if a.is_dir != b.is_dir {
+    //                     b.is_dir.cmp(&a.is_dir)
+    //                 } else {
+    //                     a_low_name.cmp(&b_low_name)
+    //                 }
+    //             }
+    //         };
+    //         if sort_ascending { result } else { result.reverse() }
+    //     });
+    //     filtred_files
+    // }
 }
 
 
@@ -457,59 +535,44 @@ impl eframe::App for FileExplorer {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-                    let mut action_path = None;
-                    if let Ok(index) = self.static_index.read(){
-                        let files = self.files_sorting(&index);
-                        if files.is_empty() {
-                            if !self.search_query.is_empty() {
-                                ui.label("Nothing was found");
+            if self.visible_dirty {
+                self.rebuild_visible();
+            }
+            let row_height = 20.0 * self.zoom_factor;
+            let mut action_path = None;
+            egui::ScrollArea::vertical().show_rows(ui, row_height, self.visible_files.len(), |ui, rows|{
+                for i in rows{
+                    let file = &self.visible_files[i];
+                    ui.horizontal(|ui|{
+                        ui.set_min_height(row_height);
+                        ui.allocate_ui(egui::vec2(300.0, row_height), |ui| {
+                            if let Some(p) = draw_item(ui, &file.path, self.zoom_factor) {
+                                action_path = Some(p);
                             }
-                        } else {
-                            TableBuilder::new(ui)
-                            .striped(true)
-                            .resizable(true)
-                            .column(Column::remainder().at_least(100.0))
-                            .column(Column::remainder().at_least(100.0))
-                            .column(Column::remainder().at_least(100.0))
-                            .header(25.0, |mut header|{
-                                header.col(|ui| { ui.strong("Name"); });
-                                header.col(|ui| { ui.strong("Path"); });
-                                header.col(|ui| { ui.strong("Created at"); });
-                            })
-                            .body(|body| {
-                                body.rows(20.0 *self.zoom_factor, files.len(), |mut row| {
-                                    let file = &files[row.index()];
-                                    row.col(|ui|{
-                                        if let Some(p) = draw_item(ui, &file.path, self.zoom_factor) {
-                                            action_path = Some(p);
-                                        }
-                                    });
-                                    row.col(|ui|{
-                                        ui.add(egui::Label::new(file.path.to_string_lossy()).truncate());
-                                    });
-                                    row.col(|ui|{
-                                        let dt: chrono::DateTime<chrono::Local> = file.created_at.into();
-                                        ui.label(dt.format("%d.%m.%y %H:%M").to_string());
-                                    });
-                                });
-                            });
-                        }
+                        });
+                        ui.allocate_ui(egui::vec2(300.0, row_height), |ui| {
+                        ui.label(file.path.to_string_lossy())});
+                        ui.allocate_ui(egui::vec2(300.0, row_height), |ui| {
+                        let dt: chrono::DateTime<chrono::Local> = file.created_at.into();
+                        ui.label(dt.format("%d.%m.%y %H:%M").to_string())});
+                    });
+                }
+            });
+            if let Some(path) = action_path {
+                if path.exists(){
+                    if path.is_dir() {
+                        self.path_history.push(self.current_path.clone());
+                        self.current_path = path;
+                    } else {
+                        let _ = opener::open(path); 
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
                     }
-                    if let Some(path) = action_path {
-                        if path.exists(){
-                            if path.is_dir() {
-                                self.path_history.push(self.current_path.clone());
-                                self.current_path = path;
-                            } else {
-                                let _ = opener::open(path); 
-                                ui.ctx().send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
-                            }
-                        } else {
-                            self.text_err = String::from("Файл не найден.");
-                            self.show_err = true;
-                        }
-                    }
-                });
+                } else {
+                    self.text_err = String::from("Файл не найден.");
+                    self.show_err = true;
+                }
+            }
+        });
     ctx.request_repaint_after(std::time::Duration::from_secs(1));
     }
 }
