@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use eframe::egui::Context;
@@ -20,7 +20,6 @@ pub struct FileExplorer {
     pub was_indexing: Arc<AtomicBool>,
     cancel_indexing: Arc<AtomicBool>,
     pub index_time: Arc<RwLock<Duration>>,
-    pub index_count: Arc<AtomicUsize>,
     pub index_all: bool,
     pub visible_files: Vec<FileInfo>,
     pub visible_dirty: bool,
@@ -53,20 +52,19 @@ impl FileExplorer {
             was_indexing: Arc::new(AtomicBool::new(false)),
             cancel_indexing: Arc::new(AtomicBool::new(false)),
             index_time: Arc::new(RwLock::new(Duration::ZERO)),
-            index_count: Arc::new(AtomicUsize::new(0)),
             index_all: false,
             visible_files: Vec::new(),
             visible_dirty: false,
             search_query: String::new(),
             sort_by: SortBy::Date,
-            sort_ascending: true,
+            sort_ascending: false,
             show_hidden: false,
             search_hidden: false,
             search_venv: false,
-            search_whole_word: true,
-            match_case: true,
+            search_whole_word: false,
+            match_case: false,
             search_everywhere: true,
-            zoom_factor: 1.4,
+            zoom_factor: 1.5,
             show_err: false,
             text_err: String::new(),
             disk_receiver: rx,
@@ -88,7 +86,6 @@ impl FileExplorer {
             Arc::clone(&self.is_indexing),
             Arc::clone(&self.cancel_indexing),
             Arc::clone(&self.index_time),
-            Arc::clone(&self.index_count),
         );
     }
 

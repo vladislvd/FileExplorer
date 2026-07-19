@@ -1,5 +1,6 @@
 use std::sync::atomic;
 use eframe::egui;
+use eframe::egui::CursorIcon;
 use crate::app::FileExplorer;
 use crate::models::SortBy;
 
@@ -38,13 +39,9 @@ pub fn draw_top_panel(
                         if ui.button("🔄").on_hover_text("Update cache(F5)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
                             app.update_index();
                         }
-                        let count = app.index_count.load(atomic::Ordering::Relaxed);
                         let time = if let Ok(t) = app.index_time.read() { *t } else { std::time::Duration::ZERO };
 
-                        ui.label(format!(
-                            "Find objects: {} | Indexing time: {:.2?}",
-                            count, time
-                        ));
+                        ui.label(format!("{:.2?}", time));
                     } else {
                         ui.spinner();
                     }
@@ -88,7 +85,8 @@ pub fn draw_top_panel(
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::default()), |ui|{
                 ui.group(|ui|{
-                    ui.menu_button("🔽", |ui|{
+
+                    let menu_res = ui.menu_button("🔽", |ui|{
                         ui.set_min_width(150.0);
                         if ui.checkbox(&mut app.search_hidden, "Search hidden").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
                             app.visible_dirty = true;
@@ -106,6 +104,8 @@ pub fn draw_top_panel(
                             app.visible_dirty = true;
                         }
                     });
+                    menu_res.response.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Search settings");
+
                     let search_bar = ui.add(
                         egui::TextEdit::singleline(&mut app.search_query)
                             .hint_text("Search...")
@@ -117,6 +117,7 @@ pub fn draw_top_panel(
                     if search_bar.hovered(){
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
                     }
+
                     if !app.search_query.is_empty(){
                         if ui.button("❌").on_hover_text("Clear the search bar").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
                             app.search_query.clear();
@@ -126,6 +127,7 @@ pub fn draw_top_panel(
                     if app.search_query.is_empty(){
                         ui.add_enabled(false, egui::Button::new("🔎"));
                     }
+
                 });
             });
         });

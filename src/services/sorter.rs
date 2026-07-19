@@ -61,7 +61,7 @@ fn sort_hidden_files(
 }
 
 fn deep_sorting(
-    files: &mut Vec<FileInfo>,
+    files: &mut Vec<FileInfo>,  
     sort_by: SortBy,
     sort_ascending: bool,
 ){

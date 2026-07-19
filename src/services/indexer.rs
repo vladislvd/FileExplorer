@@ -2,7 +2,7 @@ use std::{
     cmp,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc,
         RwLock,
     },
@@ -28,7 +28,6 @@ pub fn start_indexing(
     cancel_indexing: Arc<AtomicBool>,
 
     index_time: Arc<RwLock<Duration>>,
-    index_count: Arc<AtomicUsize>,
 
 ) {
     normalize_root(&mut root);
@@ -51,8 +50,6 @@ pub fn start_indexing(
             is_indexing.store(false, Ordering::Relaxed);
             return;
         }
-
-        index_count.store(files.len(), Ordering::Relaxed);
 
         if let Ok(mut lock) = static_index.write() {
             *lock = files;
