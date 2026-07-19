@@ -29,14 +29,14 @@ pub fn draw_item(
         }
 
         clickable_file.context_menu(|ui| {
-            // if ui.button("Copy").clicked(){
-            //     clicked_action = Some(FileAction::Copy(path.to_path_buf()));
-            //     ui.close()
-            // }
-            // if ui.button("Cut").clicked(){
-            //     clicked_action = Some(FileAction::Cut(path.to_path_buf()));
-            //     ui.close()
-            // }
+            if ui.button("Copy").clicked(){
+                clicked_action = Some(FileAction::Copy(path.to_path_buf()));
+                ui.close()
+            }
+            if ui.button("Cut").clicked(){
+                clicked_action = Some(FileAction::Cut(path.to_path_buf()));
+                ui.close()
+            }
             if ui.button("Delete").clicked(){
                 clicked_action = Some(FileAction::Delete(path.to_path_buf()));
                 ui.close()

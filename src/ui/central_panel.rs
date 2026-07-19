@@ -4,7 +4,7 @@ use std::fs;
 use eframe::egui::Sense;
 use crate::app::FileExplorer;
 use crate::services::draw_item;
-use crate::models::FileAction;
+use crate::models::{FileAction, AppClipboard, ClipboardOperation};
 
 pub fn draw_central_panel(
     app: &mut FileExplorer,
@@ -62,9 +62,19 @@ pub fn draw_central_panel(
                         app.show_err = true;
                     }
                 }
-                //TODO: добавить копирование, вырезание и вставку файлов.
-                //FileAction::Copy(path) => println!("Copy: {}", path.to_string_lossy()),
-                //FileAction::Cut(path) => println!("Cut: {}", path.to_string_lossy()),
+                FileAction::Copy(path) => {
+                    app.clipboard = Some(AppClipboard{
+                        source_path: path,
+                        operation: ClipboardOperation::Copy,
+                    })
+                },
+                FileAction::Cut(path) => {
+                    app.clipboard = Some(AppClipboard {
+                        source_path: path,
+                        operation: ClipboardOperation::Cut
+                    })
+                },
+                //TODO: добавить переименование.
                 FileAction::Delete(path) => {
                     let mut successfully_deleted = false;
                     if path.is_dir(){

@@ -3,6 +3,7 @@ use eframe::egui;
 use eframe::egui::CursorIcon;
 use crate::app::FileExplorer;
 use crate::models::SortBy;
+use crate::services::paste_operation;
 
 
 pub fn draw_top_panel(
@@ -80,6 +81,9 @@ pub fn draw_top_panel(
                             }
                         });
                     });
+                    if ui.button("📋").on_hover_text("Paste into this directory").on_hover_cursor(CursorIcon::PointingHand).clicked(){
+                        paste_operation(app);
+                    }
                 });
                 ui.add_space(50.0);
             });

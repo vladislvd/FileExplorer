@@ -60,7 +60,7 @@ fn sort_hidden_files(
         .collect()
 }
 
-fn deep_sorting(
+pub fn deep_sorting(
     files: &mut Vec<FileInfo>,  
     sort_by: SortBy,
     sort_ascending: bool,

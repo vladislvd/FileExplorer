@@ -6,7 +6,7 @@ use std::time::Duration;
 use eframe::egui::Context;
 use eframe::Frame;
 use sysinfo::Disks;
-use crate::models::{DiskInfo, FileInfo, SortBy};
+use crate::models::{DiskInfo, FileInfo, SortBy, AppClipboard};
 use crate::services::{start_indexing, sorting, start_disks_monitoring, get_new_disks};
 use crate::ui::{draw_central_panel, draw_side_panel, draw_top_panel};
 use crate::ui::show_error_window;
@@ -37,6 +37,7 @@ pub struct FileExplorer {
     pub text_err: String,
     pub disk_receiver: Receiver<Disks>,
     pub all_disks: Vec<DiskInfo>,
+    pub clipboard: Option<AppClipboard>,
 }
 
 impl FileExplorer {
@@ -69,6 +70,7 @@ impl FileExplorer {
             text_err: String::new(),
             disk_receiver: rx,
             all_disks: Vec::new(),
+            clipboard: None,
         };
 
         app.update_index();
