@@ -1,10 +1,10 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod app;
 mod models;
 mod services;
 mod ui;
 use eframe::egui;
 use app::FileExplorer;
-
 
 fn main() -> eframe::Result<(), eframe::Error>{
     let options = eframe::NativeOptions{

@@ -38,6 +38,8 @@ pub struct FileExplorer {
     pub disk_receiver: Receiver<Disks>,
     pub all_disks: Vec<DiskInfo>,
     pub clipboard: Option<AppClipboard>,
+    pub source_rename: Option<PathBuf>,
+    pub new_for_rename: String,
 }
 
 impl FileExplorer {
@@ -71,6 +73,8 @@ impl FileExplorer {
             disk_receiver: rx,
             all_disks: Vec::new(),
             clipboard: None,
+            source_rename: None,
+            new_for_rename: String::new(),
         };
 
         app.update_index();
@@ -122,6 +126,7 @@ impl eframe::App for FileExplorer{
             show_error_window(self, &ctx);
         }
 
+        //todo: переделать структуру функций отрисовки панелей
         draw_side_panel(self, &ctx);
         draw_top_panel(self, &ctx);
         draw_central_panel(self, &ctx);

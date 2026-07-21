@@ -143,7 +143,7 @@ fn filter_entry(entry: &ignore::DirEntry) -> bool {
             Some("Windows")
             | Some("$Recycle.Bin")
             | Some("$SysReset")
-            | Some("hp")
+            //| Some("hp")
             | Some("System.sav")
             | Some("AppData")
             | Some("Default")

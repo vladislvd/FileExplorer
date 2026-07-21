@@ -5,5 +5,6 @@ pub enum FileAction{
     Open(PathBuf),
     Copy(PathBuf),
     Cut(PathBuf),
+    Rename(PathBuf),
     Delete(PathBuf),
 }

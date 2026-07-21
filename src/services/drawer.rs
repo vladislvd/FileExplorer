@@ -8,7 +8,8 @@ pub fn draw_item(
     path: &PathBuf,
     search_query: &mut String,
     visible_dirty: &mut bool,
-    zoom_factor: f32
+    zoom_factor: f32,
+    is_cut: bool,
 ) -> Option<FileAction>{
     let filename = path.file_name().unwrap_or_default().to_string_lossy();
     let is_dir = path.is_dir();
@@ -19,7 +20,11 @@ pub fn draw_item(
     let mut clicked_action = None;
     ui.scope(|ui|{
         ui.style_mut().spacing.button_padding *= zoom_factor;
-        let clickable_file = ui.selectable_label(false, format!("{} {}", icon, filename)).on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        let clickable_file = ui.add_enabled_ui(!is_cut, |ui| {
+            ui.selectable_label(false, format!("{} {}", icon, filename)).on_hover_cursor(egui::CursorIcon::PointingHand)
+        }).inner;
+
         if clickable_file.clicked() {
             if !search_query.is_empty(){
                 search_query.clear();
@@ -28,7 +33,10 @@ pub fn draw_item(
             *visible_dirty = true;
         }
 
-        clickable_file.context_menu(|ui| {
+        clickable_file.clone().context_menu(|ui| {
+            ui.spacing_mut().interact_size = egui::vec2(100.0, 26.0);
+            ui.set_min_width(80.0);
+
             if ui.button("Copy").clicked(){
                 clicked_action = Some(FileAction::Copy(path.to_path_buf()));
                 ui.close()
@@ -37,6 +45,11 @@ pub fn draw_item(
                 clicked_action = Some(FileAction::Cut(path.to_path_buf()));
                 ui.close()
             }
+            if ui.button("Rename").clicked(){
+                clicked_action = Some(FileAction::Rename(path.to_path_buf()));
+                ui.close();
+            }
+            ui.separator();
             if ui.button("Delete").clicked(){
                 clicked_action = Some(FileAction::Delete(path.to_path_buf()));
                 ui.close()

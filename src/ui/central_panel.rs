@@ -1,11 +1,11 @@
 use std::sync::atomic::Ordering;
 use eframe::egui;
 use std::fs;
-use eframe::egui::Sense;
 use crate::app::FileExplorer;
-use crate::services::draw_item;
+use crate::services::{draw_item, rename_operation_window};
 use crate::models::{FileAction, AppClipboard, ClipboardOperation};
 
+//todo: при нажатии по свободной части меню должна быть(новая папка, новый файл, вставить)
 pub fn draw_central_panel(
     app: &mut FileExplorer,
     ctx: &egui::Context
@@ -24,14 +24,18 @@ pub fn draw_central_panel(
                     let file = &app.visible_files[i];
                     ui.horizontal(|ui|{
                         ui.set_min_height(row_height);
-                        let (rect1, _) = ui.allocate_exact_size(egui::vec2(300.0, row_height), Sense::hover());
+                        let (rect1, _) = ui.allocate_exact_size(egui::vec2(300.0, row_height), egui::Sense::hover());
                         ui.scope_builder(egui::UiBuilder::new().max_rect(rect1), |ui|{
-                            if let Some(p) = draw_item(ui, &file.path, &mut app.search_query ,&mut app.visible_dirty, app.zoom_factor) {
+                            let mut is_cut = false;
+                            if let Some(clipboard) = &app.clipboard {
+                                is_cut = file.path == clipboard.source_path;
+                            }
+                            if let Some(p) = draw_item(ui, &file.path, &mut app.search_query ,&mut app.visible_dirty, app.zoom_factor, is_cut) {
                                 pending_action = Some(p);
                             }
                         });
 
-                        let (rect2, _) = ui.allocate_exact_size(egui::vec2(300.0, row_height), Sense::hover());
+                        let (rect2, _) = ui.allocate_exact_size(egui::vec2(300.0, row_height), egui::Sense::hover());
                         ui.scope_builder(egui::UiBuilder::new().max_rect(rect2), |ui|{
                             ui.label(file.path.to_string_lossy())
                         });
@@ -74,7 +78,12 @@ pub fn draw_central_panel(
                         operation: ClipboardOperation::Cut
                     })
                 },
-                //TODO: добавить переименование.
+                FileAction::Rename(path) => {
+                    if let Some(filename) = path.clone().file_name(){
+                        app.source_rename = Some(path);
+                        app.new_for_rename = filename.to_string_lossy().into_owned();
+                    }
+                }
                 FileAction::Delete(path) => {
                     let mut successfully_deleted = false;
                     if path.is_dir(){
@@ -103,5 +112,10 @@ pub fn draw_central_panel(
                 }
             }
         }
+        if let Some(old_path) = app.source_rename.clone() {
+            rename_operation_window(&ctx, app, old_path);
+        }
     });
 }
+
+

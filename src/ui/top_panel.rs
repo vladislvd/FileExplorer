@@ -15,37 +15,46 @@ pub fn draw_top_panel(
         ui.horizontal(|ui|{
             ui.with_layout(egui::Layout::left_to_right(egui::Align::default()), |ui|{
                 ui.group(|ui|{
-                    if ui.button("🏠").on_hover_text("To the home directory").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
+
+                    let alt_down_arrow_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::ArrowDown)));
+                    if ui.button("🏠").on_hover_text("To the home directory (ALT + ArrowDown").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || alt_down_arrow_pressed {
                         if let Some(home_dir) = dirs::home_dir(){
                             app.path_history.push(app.current_path.clone());
                             app.current_path = home_dir;
                             app.visible_dirty = true;
                         }
                     }
-                    if ui.button("^").on_hover_text("To the parent directory").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {  //изменить ширину
+
+                    let alt_up_arrow_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::ArrowUp)));
+                    if ui.button("^").on_hover_text("To the parent directory (ALT + ArrowUp").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || alt_up_arrow_pressed {
                         if let Some(parent) = app.current_path.parent() {
                             app.path_history.push(app.current_path.clone());
                             app.current_path = parent.to_path_buf();
                             app.visible_dirty = true;
                         }
                     }
-                    if ui.button("<--").on_hover_text("To the previous directory").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
+
+                    let alt_left_arrow_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::ArrowLeft)));
+                    if ui.button("<--").on_hover_text("To the previous directory (ALT + ArrowLeft)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || alt_left_arrow_pressed {
                         if let Some(future_path) = app.path_history.pop(){
                             app.current_path = future_path;
                             app.visible_dirty = true;
                         }
                     }
-                    ui.label(format!("Current path: {}", app.current_path.to_string_lossy())); //можно поменять to_string_lossy на display??
-                    if !app.is_indexing.clone().load(atomic::Ordering::Relaxed){
-                        if ui.button("🔄").on_hover_text("Update cache(F5)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){
-                            app.update_index();
-                        }
-                        let time = if let Ok(t) = app.index_time.read() { *t } else { std::time::Duration::ZERO };
 
-                        ui.label(format!("{:.2?}", time));
-                    } else {
-                        ui.spinner();
-                    }
+                    ui.label(format!("{}", app.current_path.to_string_lossy()));
+                        if !app.is_indexing.clone().load(atomic::Ordering::Relaxed){
+                            let f5_pressed = ui.input(|i| i.key_pressed(egui::Key::F5));
+
+                            if ui.button("🔄").on_hover_text("Update cache(F5)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() || f5_pressed {
+                                app.update_index();
+                            }
+                            let time = if let Ok(t) = app.index_time.read() { *t } else { std::time::Duration::ZERO };
+
+                            ui.label(format!("{:.2?}", time));
+                        } else {
+                            ui.spinner();
+                        }
                 });
                 ui.add_space(10.0);
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -81,8 +90,26 @@ pub fn draw_top_panel(
                             }
                         });
                     });
-                    if ui.button("📋").on_hover_text("Paste into this directory").on_hover_cursor(CursorIcon::PointingHand).clicked(){
+
+                    let mut is_clipboard_empty = true;
+                    if app.clipboard.is_some() {
+                        is_clipboard_empty = false;
+                    }
+
+                    let paste_button = ui.add_enabled_ui(!is_clipboard_empty, |ui| {
+                        ui.button("📋").on_hover_text("Paste into this directory").on_hover_cursor(CursorIcon::PointingHand)
+                    }).inner;
+
+                    if paste_button.clicked(){
                         paste_operation(app);
+                    }
+
+                    let clear_clipboard_button = ui.add_enabled_ui(!is_clipboard_empty, |ui| {
+                        ui.button("🧹").on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Clear the clipboard")
+                    }).inner;
+
+                    if clear_clipboard_button.clicked() {
+                        app.clipboard = None
                     }
                 });
                 ui.add_space(50.0);
