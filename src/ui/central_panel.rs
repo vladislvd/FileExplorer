@@ -28,7 +28,7 @@ pub fn draw_central_panel(
                         ui.scope_builder(egui::UiBuilder::new().max_rect(rect1), |ui|{
                             let mut is_cut = false;
                             if let Some(clipboard) = &app.clipboard {
-                                is_cut = file.path == clipboard.source_path;
+                                is_cut = file.path == clipboard.source_path && clipboard.operation == ClipboardOperation::Cut;
                             }
                             if let Some(p) = draw_item(ui, &file.path, &mut app.search_query ,&mut app.visible_dirty, app.zoom_factor, is_cut) {
                                 pending_action = Some(p);

@@ -3,6 +3,7 @@ use eframe::egui;
 use std::os::windows::fs::MetadataExt;
 use std::path::PathBuf;
 use fs_extra;
+use walkdir::WalkDir;
 use fs_extra::dir::CopyOptions;
 use smol_str::SmolStr;
 use crate::app::FileExplorer;
@@ -20,7 +21,6 @@ pub fn paste_operation(
 
         let target_path = app.current_path.join(file_name);
 
-        //fixme: не работает почему-то проверка
         if target_path == clipboard.source_path{
             app.text_err = String::from("File already in this directory");
             app.show_err = true;
@@ -29,7 +29,6 @@ pub fn paste_operation(
 
         let mut successfully_paste = false;
         match clipboard.operation {
-            //fixme: fs_extra::dir::copy копирует всё в папке, но в индексе и в visible_files остаются СТАРЫЕ файлы в СТАРОЙ папке и ВИЗУАЛЬНО не переносятся.
             ClipboardOperation::Copy => {
                 if clipboard.source_path.is_dir(){
                     match fs_extra::dir::copy(&clipboard.source_path, &app.current_path, &CopyOptions::new()) {
@@ -49,15 +48,14 @@ pub fn paste_operation(
                     }
                 }
             },
-            //fixme: в индексе и в visible files файлы в папках не обновляются и ВИЗУАЛЬНО не переносятся.
             ClipboardOperation::Cut => {
                 match fs::rename(&clipboard.source_path, &target_path) {
                     Ok(_) => {
                         successfully_paste = true;
                         if let Ok(mut lock) = app.static_index.write() {
-                            lock.retain(|file| file.path != clipboard.source_path)
+                            lock.retain(|file| !file.path.starts_with(&clipboard.source_path))
                         }
-                        app.visible_files.retain(|file| file.path != clipboard.source_path)
+                        app.visible_files.retain(|file| file.path != clipboard.source_path);
                     }
                     Err(e) => {
                         app.text_err = format!("Failed to move file, {}", e);
@@ -67,14 +65,19 @@ pub fn paste_operation(
             }
         }
         if successfully_paste {
-            let file_info = build_file_info_from_path(target_path);
+
+            let files_info: Vec<FileInfo> = if target_path.is_dir() {
+                 collect_files_from_dir(&target_path)
+            } else {
+                vec![build_file_info_from_path(target_path.clone())]
+            };
 
             if let Ok(mut lock) = app.static_index.write() {
-                lock.push(file_info.clone())
+                lock.extend(files_info.clone())
             }
 
-            app.visible_files.push(file_info);
-            
+            app.visible_files.extend(files_info.into_iter().filter(|f| f.path.parent() == Some(&app.current_path)));
+
             deep_sorting(&mut app.visible_files, app.sort_by, app.sort_ascending)
         }
     }
@@ -102,19 +105,28 @@ pub fn rename_operation_window(
                     if ui.add_sized([80.0, 12.0],egui::Button::new("Apply")).clicked() || enter_pressed {
                         if let Some(parent) = old_path.parent() {
                             let new_path = parent.join(&app.new_for_rename);
-                            //fixme: в индексе и в visible files файлы в папках не обновляются и ВИЗУАЛЬНО не переносятся.
                             match fs::rename(&old_path, &new_path) {
                                 Ok(_) => {
                                     if let Ok(mut lock) = app.static_index.write() {
-                                        if let Some(file) = lock.iter_mut().find(|f| f.path == old_path) {
-                                            file.path = new_path.clone();
-                                            file.name = SmolStr::new(&app.new_for_rename);
+                                        for file in lock.iter_mut() {
+                                            if let Ok(suffix) = file.path.clone().strip_prefix(&old_path) {
+                                                file.path = new_path.join(suffix);
+
+                                                if suffix.components().count() == 0 {
+                                                    file.name = SmolStr::new(&app.new_for_rename)
+                                                }
+                                            }
                                         }
                                     }
 
-                                    if let Some(file) = app.visible_files.iter_mut().find(|f| f.path == old_path) {
-                                        file.path = new_path;
-                                        file.name = SmolStr::new(&app.new_for_rename);
+                                    for file in app.visible_files.iter_mut() {
+                                        if let Ok(suffix) = file.path.clone().strip_prefix(&old_path) {
+                                            file.path = new_path.join(suffix);
+
+                                            if suffix.components().count() == 0 {
+                                                file.name = SmolStr::new(&app.new_for_rename)
+                                            }
+                                        }
                                     }
 
                                     deep_sorting(&mut app.visible_files, app.sort_by, app.sort_ascending)
@@ -128,7 +140,8 @@ pub fn rename_operation_window(
                         close_window = true;
                     }
 
-                    if ui.add_sized([80.0, 12.0],egui::Button::new("Cancel")).clicked(){
+                    let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                    if ui.add_sized([80.0, 12.0],egui::Button::new("Cancel")).clicked() || escape_pressed {
                         close_window = true
                     }
                 });
@@ -150,6 +163,16 @@ pub fn rename_operation_window(
         app.source_rename = None;
         app.new_for_rename.clear();
     }
+}
+
+fn collect_files_from_dir(
+    dir_path: &PathBuf,
+) -> Vec<FileInfo>{
+     WalkDir::new(dir_path)
+         .into_iter()
+         .filter_map(|e| e.ok())
+         .map(|entry| build_file_info_from_path(entry.path().to_path_buf()))
+         .collect()
 }
 
 fn build_file_info_from_path(path: PathBuf) -> FileInfo{
