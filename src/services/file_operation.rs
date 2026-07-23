@@ -90,18 +90,34 @@ pub fn rename_operation_window(
 ){
     let mut close_window = false;
 
-    //todo: ui нормальный сделать
     let window_res = egui::Window::new("Rename file")
         .resizable(false)
+        .collapsible(false)
         .movable(true)
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(ctx.content_rect().center())
+        .fixed_size([300.0, 100.0])
         .show(ctx, |ui|{
-            ui.text_edit_singleline(&mut app.new_for_rename);
+            ui.add_space(4.0);
+
+            let text_response = ui.add(
+                egui::TextEdit::singleline(&mut app.new_for_rename)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Enter new name..."),
+            );
+
+            if app.new_for_rename.is_empty() {
+                text_response.request_focus();
+            }
+
+            ui.add_space(12.0);
 
             ui.horizontal(|ui|{
-                let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::TopDown).with_main_justify(false), |ui| {
+
+                    let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
                     if ui.add_sized([80.0, 12.0],egui::Button::new("Apply")).clicked() || enter_pressed {
                         if let Some(parent) = old_path.parent() {
                             let new_path = parent.join(&app.new_for_rename);
@@ -140,7 +156,6 @@ pub fn rename_operation_window(
                         close_window = true;
                     }
 
-                    let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
                     if ui.add_sized([80.0, 12.0],egui::Button::new("Cancel")).clicked() || escape_pressed {
                         close_window = true
                     }
