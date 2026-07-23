@@ -1,12 +1,15 @@
-use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Receiver;
-use std::time::Duration;
-use eframe::egui::Context;
-use eframe::Frame;
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{Arc, RwLock, 
+           atomic::{AtomicBool, Ordering},
+           mpsc::Receiver,
+    },
+    time::Duration,
+};
+use eframe::{egui, Frame};
 use sysinfo::Disks;
-use crate::models::{DiskInfo, FileInfo, SortBy, AppClipboard};
+use crate::models::{DiskInfo, FileInfo, SortBy, AppClipboard, FileAction, ClipboardOperation};
 use crate::services::{start_indexing, sorting, start_disks_monitoring, get_new_disks};
 use crate::ui::{draw_central_panel, draw_side_panel, draw_top_panel};
 use crate::ui::show_error_window;
@@ -112,10 +115,90 @@ impl FileExplorer {
           self.sort_by.clone(),
         );
     }
+
+    pub fn handle_file_action(
+        &mut self,
+        action: FileAction,
+        ui: &mut egui::Ui,
+    ){
+        match action {
+            FileAction::Open(path) => {
+                if path.exists(){
+                    if path.is_dir() {
+                        self.path_history.push(self.current_path.clone());
+                        self.current_path = path;
+                        self.visible_dirty = true;
+                    } else {
+                        let _ = opener::open(path);
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::WindowLevel(egui::WindowLevel::Normal));
+                    }
+                } else {
+                    self.text_err = String::from("File not found.");
+                    self.show_err = true;
+                }
+            }
+            FileAction::Copy(path) => {
+                self.clipboard = Some(AppClipboard {
+                    source_path: path,
+                    operation: ClipboardOperation::Copy,
+                })
+            },
+            FileAction::Cut(path) => {
+                self.clipboard = Some(AppClipboard {
+                    source_path: path,
+                    operation: ClipboardOperation::Cut
+                })
+            },
+            FileAction::Rename(path) => {
+                if let Some(filename) = path.clone().file_name(){
+                    self.source_rename = Some(path);
+                    self.new_for_rename = filename.to_string_lossy().into_owned();
+                }
+            }
+            FileAction::Delete(path) => {
+                let mut successfully_deleted = false;
+                if path.is_dir(){
+                    match fs::remove_dir_all(&path) {
+                        Ok(_) => successfully_deleted = true,
+                        Err(e) => {
+                            self.text_err = format!("Couldn`t delete dir {}", e);
+                            self.show_err = true;
+                        }
+                    }
+                } else {
+                    match fs::remove_file(&path) {
+                        Ok(_) => successfully_deleted = true,
+                        Err(e) => {
+                            self.text_err = format!("Couldn`t delete file {}", e);
+                            self.show_err = true;
+                        }
+                    }
+                }
+                if successfully_deleted {
+                    if let Ok(mut lock) = self.static_index.write() {
+                        lock.retain(|file| path != file.path)
+                    }
+                    self.visible_files.retain(|file| path != file.path)
+                }
+            }
+        }
+    }
+
+    pub fn handle_disk_action(
+        &mut self,
+        selected_disk: Option<PathBuf>,
+    ){
+        if let Some(path) = selected_disk {
+            self.current_disk = path.clone();
+            self.current_path = path;
+            self.update_index();
+            self.visible_dirty = true;
+        }
+    }
 }
 
 impl eframe::App for FileExplorer{
-    fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         check_end_of_indexing(self);
         
         get_new_disks(self);
@@ -126,7 +209,6 @@ impl eframe::App for FileExplorer{
             show_error_window(self, &ctx);
         }
 
-        //todo: переделать структуру функций отрисовки панелей
         draw_side_panel(self, &ctx);
         draw_top_panel(self, &ctx);
         draw_central_panel(self, &ctx);

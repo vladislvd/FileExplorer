@@ -1,5 +1,7 @@
-use std::path::PathBuf;
-use std::sync::RwLockReadGuard;
+use std::{
+    path::PathBuf, 
+    sync::RwLockReadGuard
+};
 use rayon::prelude::*;
 use crate::models::FileInfo;
 use crate::models::SortBy;

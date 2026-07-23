@@ -1,10 +1,12 @@
-use std::fs;
+use std::{
+    fs,
+    os::windows::fs::MetadataExt,
+    path::PathBuf,
+
+};
 use eframe::egui;
-use std::os::windows::fs::MetadataExt;
-use std::path::PathBuf;
-use fs_extra;
+use fs_extra::dir::{copy, CopyOptions};
 use walkdir::WalkDir;
-use fs_extra::dir::CopyOptions;
 use smol_str::SmolStr;
 use crate::app::FileExplorer;
 use crate::models::{ClipboardOperation, FileInfo};
@@ -31,7 +33,7 @@ pub fn paste_operation(
         match clipboard.operation {
             ClipboardOperation::Copy => {
                 if clipboard.source_path.is_dir(){
-                    match fs_extra::dir::copy(&clipboard.source_path, &app.current_path, &CopyOptions::new()) {
+                    match copy(&clipboard.source_path, &app.current_path, &CopyOptions::new()) {
                         Ok(_) => successfully_paste = true,
                         Err(e) => {
                             app.text_err = format!("Failed to copy directory, {}", e);

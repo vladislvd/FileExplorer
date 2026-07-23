@@ -1,7 +1,9 @@
-use std::sync::mpsc::{channel, Receiver};
+use std::{
+    sync::mpsc::{channel, Receiver},
+    thread,
+    time::Duration,
+};
 use sysinfo::Disks;
-use std::thread;
-use std::time::Duration;
 use crate::app::FileExplorer;
 use crate::models::DiskInfo;
 

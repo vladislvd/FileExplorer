@@ -2,6 +2,7 @@ pub mod central_panel;
 pub mod top_panel;
 pub mod side_panel;
 mod error;
+mod extensions;
 
 pub use central_panel::draw_central_panel;
 pub use side_panel::draw_side_panel;

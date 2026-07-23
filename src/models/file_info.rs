@@ -1,5 +1,7 @@
-use std::path::PathBuf;
-use std::time::SystemTime;
+use std::{
+    path::PathBuf,
+    time::SystemTime,
+};
 use smol_str::SmolStr;
 
 #[derive(Clone, Debug)]
