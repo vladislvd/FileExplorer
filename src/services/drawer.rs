@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use eframe::egui;
+use egui_material_icons::icons;
 use infer;
 use crate::models::FileAction;
 
@@ -37,20 +38,20 @@ pub fn draw_item(
             ui.spacing_mut().interact_size = egui::vec2(100.0, 26.0);
             ui.set_min_width(80.0);
 
-            if ui.button("Copy").clicked(){
+            if ui.button(format!("{} Copy", icons::ICON_CONTENT_COPY)).clicked(){
                 clicked_action = Some(FileAction::Copy(path.to_path_buf()));
                 ui.close()
             }
-            if ui.button("Cut").clicked(){
+            if ui.button(format!("{} Cut", icons::ICON_CUT)).clicked(){
                 clicked_action = Some(FileAction::Cut(path.to_path_buf()));
                 ui.close()
             }
-            if ui.button("Rename").clicked(){
+            if ui.button(format!("{} Rename", icons::ICON_DRIVE_FILE_RENAME_OUTLINE)).clicked(){
                 clicked_action = Some(FileAction::Rename(path.to_path_buf()));
                 ui.close();
             }
             ui.separator();
-            if ui.button("Delete").clicked(){
+            if ui.button(format!("{} Delete", icons::ICON_DELETE_FOREVER)).clicked(){
                 clicked_action = Some(FileAction::Delete(path.to_path_buf()));
                 ui.close()
             }

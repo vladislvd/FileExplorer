@@ -1,5 +1,6 @@
 use std::sync::atomic;
 use eframe::egui;
+use egui_material_icons::icons;
 use crate::app::FileExplorer;
 use crate::models::SortBy;
 use crate::services::paste_operation;
@@ -47,7 +48,7 @@ fn home_button(
 
 ){
     let alt_down_arrow_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::ArrowDown)));
-    if ui.button("🏠").on_hover_text("To the home directory (ALT + ArrowDown").hand_cursor().clicked() || alt_down_arrow_pressed {
+    if ui.button(format!("{}", icons::ICON_HOME)).on_hover_text("To the home directory (ALT + ArrowDown").hand_cursor().clicked() || alt_down_arrow_pressed {
         if let Some(home_dir) = dirs::home_dir(){
             app.path_history.push(app.current_path.clone());
             app.current_path = home_dir;
@@ -61,7 +62,7 @@ fn parent_dir_button(
     app: &mut FileExplorer,
 ){
     let alt_up_arrow_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::ArrowUp)));
-    if ui.button("^").on_hover_text("To the parent directory (ALT + ArrowUp").hand_cursor().clicked() || alt_up_arrow_pressed {
+    if ui.button(format!("{}", icons::ICON_ARROW_UPWARD)).on_hover_text("To the parent directory (ALT + ArrowUp").hand_cursor().clicked() || alt_up_arrow_pressed {
         if let Some(parent) = app.current_path.parent() {
             app.path_history.push(app.current_path.clone());
             app.current_path = parent.to_path_buf();
@@ -75,7 +76,7 @@ fn previous_button(
     app: &mut FileExplorer,
 ){
     let alt_left_arrow_pressed = ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::ALT, egui::Key::ArrowLeft)));
-    if ui.button("<--").on_hover_text("To the previous directory (ALT + ArrowLeft)").hand_cursor().clicked() || alt_left_arrow_pressed {
+    if ui.button(format!("{}", icons::ICON_KEYBOARD_BACKSPACE)).on_hover_text("To the previous directory (ALT + ArrowLeft)").hand_cursor().clicked() || alt_left_arrow_pressed {
         if let Some(future_path) = app.path_history.pop(){
             app.current_path = future_path;
             app.visible_dirty = true;
@@ -91,7 +92,7 @@ fn update_index_indicator_button(
     if !app.is_indexing.clone().load(atomic::Ordering::Relaxed){
         let f5_pressed = ui.input(|i| i.key_pressed(egui::Key::F5));
 
-        if ui.button("🔄").on_hover_text("Update cache(F5)").hand_cursor().clicked() || f5_pressed {
+        if ui.button(format!("{}", icons::ICON_UPDATE)).on_hover_text("Update cache (F5)").hand_cursor().clicked() || f5_pressed {
             app.update_index();
         }
         let time = if let Ok(t) = app.index_time.read() { *t } else { std::time::Duration::ZERO };
@@ -106,19 +107,20 @@ fn sort_and_view_settings(
     ui: &mut egui::Ui,
     app: &mut FileExplorer,
 ){
-    ui.menu_button("⚙ View and sort 🔽", |ui|{
+    ui.menu_button(format!("{} View and sort {}", icons::ICON_SETTINGS, icons::ICON_EXPAND_MORE), |ui|{
         ui.set_width(150.0);
 
-        if ui.checkbox(&mut app.show_hidden, "Show hidden").hand_cursor().clicked(){
+        let icon_visibility = if app.show_hidden { icons::ICON_VISIBILITY_OFF } else { icons::ICON_VISIBILITY };
+        if ui.checkbox(&mut app.show_hidden, format!("{} Show hidden", icon_visibility)).hand_cursor().clicked(){
             app.visible_dirty = true;
         }
 
         ui.separator();
 
         ui.label("Sort by:");
-        if ui.radio_value(&mut app.sort_by, SortBy::Date, "Date").hand_cursor().clicked()
-            || ui.radio_value(&mut app.sort_by, SortBy::Name, "Name").hand_cursor().clicked()
-            || ui.radio_value(&mut app.sort_by, SortBy::Type, "Type").hand_cursor().clicked()
+        if ui.radio_value(&mut app.sort_by, SortBy::Date, format!("{} Date", icons::ICON_CALENDAR_TODAY)).hand_cursor().clicked()
+            || ui.radio_value(&mut app.sort_by, SortBy::Name, format!("{} Name", icons::ICON_SORT_BY_ALPHA)).hand_cursor().clicked()
+            || ui.radio_value(&mut app.sort_by, SortBy::Type, format!("{} Type", icons::ICON_FOLDER)).hand_cursor().clicked()
         {
             app.visible_dirty = true;
         }
@@ -133,7 +135,7 @@ fn sort_and_view_settings(
 
         ui.separator();
 
-        if ui.checkbox(&mut app.index_all, "Indexing all").hand_cursor().clicked(){
+        if ui.checkbox(&mut app.index_all, format!("{} Indexing all", icons::ICON_ALL_MATCH)).hand_cursor().clicked(){
             app.update_index();
         }
     }).response.hand_cursor();
@@ -145,11 +147,11 @@ fn clipboard_buttons(
 ){
     let is_clipboard_empty =  app.clipboard.is_some();
 
-    ui.add_enabled_ui(!is_clipboard_empty, |ui| {
-        if ui.button("📋").on_hover_text("Paste into this directory").hand_cursor().clicked() {
+    ui.add_enabled_ui(is_clipboard_empty, |ui| {
+        if ui.button(format!("{}", icons::ICON_CONTENT_PASTE)).on_hover_text("Paste into this directory").hand_cursor().clicked() {
             paste_operation(app);
         }
-        if ui.button("🧹").on_hover_text("Clear the clipboard").hand_cursor().clicked() {
+        if ui.button(format!("{}", icons::ICON_CONTENT_PASTE_OFF)).on_hover_text("Clear the clipboard").hand_cursor().clicked() {
             app.clipboard = None
         }
     });
@@ -159,7 +161,7 @@ fn search_settings(
     ui: &mut egui::Ui,
     app: &mut FileExplorer,
 ){
-    ui.menu_button("🔽", |ui|{
+    ui.menu_button(format!("{}", icons::ICON_EXPAND_MORE), |ui|{
         ui.set_min_width(150.0);
 
         if ui.checkbox(&mut app.search_hidden, "Search hidden").hand_cursor().clicked()
@@ -186,7 +188,7 @@ fn search_bar(
     }
 
     if !app.search_query.is_empty(){
-        if ui.button("❌").on_hover_text("Clear the search bar").hand_cursor().clicked(){
+        if ui.button(format!("{}", icons::ICON_CLEAR)).on_hover_text("Clear the search bar").hand_cursor().clicked(){
             app.search_query.clear();
             app.visible_dirty = true;
         }

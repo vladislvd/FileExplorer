@@ -4,6 +4,7 @@ mod models;
 mod services;
 mod ui;
 use eframe::egui;
+use egui_material_icons;
 use app::FileExplorer;
 
 fn main() -> eframe::Result<(), eframe::Error>{
@@ -17,6 +18,10 @@ fn main() -> eframe::Result<(), eframe::Error>{
     eframe::run_native(
         "FileExplorer",
         options,
-        Box::new(|cc| Ok(Box::new(FileExplorer::new(cc))))
+        Box::new(|cc| {
+            egui_material_icons::initialize(&cc.egui_ctx);
+
+            Ok(Box::new(FileExplorer::new(cc)))
+        })
     )
 }

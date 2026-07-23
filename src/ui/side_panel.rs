@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use eframe::egui;
+use egui_material_icons::icons;
 use crate::app::FileExplorer;
 use crate::ui::extensions::PointHandTrait;
 
@@ -13,8 +14,9 @@ pub fn draw_side_panel(
     egui::SidePanel::left("left_panel")
         .resizable(true)
         .default_width(200.0)
-        .width_range(55.0..=screen_width - 50.0)
+        .width_range(60.0..=screen_width - 50.0)
         .show(ctx, |ui| {
+            ui.set_min_width(ui.available_width());
             selected_disk = draw_disks(ui, app);
         });
 
@@ -28,6 +30,7 @@ fn draw_disks(
     let mut result: Option<PathBuf> = None;
 
     ui.vertical(|ui|{
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
         ui.label(egui::RichText::new("Disks: ").size(15.0));
 
         for disk in &app.all_disks {
@@ -35,13 +38,14 @@ fn draw_disks(
             if ui
                 .selectable_label(
                     false,
-                    format!("{} ({})",
+                    format!("{} {} ({})",
+                            icons::ICON_STORAGE,
                             disk.name,
                             disk.mount_point_str
                     )
                 )
                 .on_hover_text(
-                    format!("Total space:{} Gb\nAvailable space: {} Gb",
+                    format!("Total space: {} Gb\nAvailable space: {} Gb",
                             disk.total_gb,
                             disk.available_gb
                     )
